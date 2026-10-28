@@ -3,6 +3,9 @@ import pg from "pg";
 
 const TABLE = "benchmark_results.rsults";
 const pool = new pg.Pool();
+// An idle connection dropped by the server is emitted here; without a listener
+// Node treats it as unhandled and the whole app exits. The next query reconnects.
+pool.on("error", (err) => console.error(`[db] idle connection lost: ${err.message}`));
 
 export async function ensureSchema() {
   await pool.query(`ALTER TABLE ${TABLE} ADD COLUMN IF NOT EXISTS model text`);

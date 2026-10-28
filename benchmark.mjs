@@ -4,7 +4,7 @@ import { applyModel, postChat } from "./agent.mjs";
 import { insertResult } from "./db.mjs";
 
 export const status = {
-  state: "idle", model: null, done: 0, total: 0, failures: 0, lastError: "",
+  state: "idle", model: null, done: 0, total: 0, failures: 0, unsaved: 0, lastError: "",
   current: null, last: null, sessions: [],
 };
 
@@ -44,10 +44,60 @@ async function ask(question, sessionId) {
   }
 }
 
+/** Calls fn, retrying after each delay while it throws; the last error is rethrown. */
+export async function withRetry(fn, delaysMs = [1000, 2000, 4000, 8000]) {
+  for (const delay of delaysMs) {
+    try {
+      return await fn();
+    } catch (err) {
+      console.error(`[run] retrying in ${delay} ms: ${err.message}`);
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+  return fn();
+}
+
+/** After a run stops early: the message in flight failed, the rest never ran. */
+export function markAborted(sessions, error) {
+  for (const message of sessions.flatMap((s) => s.messages)) {
+    if (message.state === "running") Object.assign(message, { state: "failed", error });
+    else if (message.state === "pending") message.state = "skipped";
+  }
+}
+
+// One question: ask, show the result, then save it. The page is updated before
+// the insert so a database outage cannot lose an answer that took minutes.
+async function answerOne({ view, s, m, of, question, answer, sessionId, model, runId }) {
+  const started = Date.now();
+  view.messages[m].state = "running";
+  status.current = { session: s, label: view.label, message: m, of, question, sessionId, startedAt: started };
+  const result = await ask(question, sessionId);
+  // A failed turn returns no session; keep the old one so the follow-ups still have context.
+  const nextSessionId = result.sessionId || sessionId;
+  const latency_ms = Date.now() - started;
+  Object.assign(view.messages[m], { ...result, sessionId: nextSessionId, latency_ms, state: result.ok ? "ok" : "failed" });
+  view.agentSessionId = nextSessionId;
+  status.current = null;
+  status.done++;
+  if (!result.ok) { status.failures++; status.lastError = result.error; }
+
+  const row = { ...result, sessionId: nextSessionId, prompt: question, expected_answer: answer, latency_ms };
+  try {
+    await withRetry(() => insertResult(row, model, runId));
+  } catch (err) {
+    console.error(`[run] could not save session ${view.label} message ${m + 1}: ${err.message}`);
+    Object.assign(view.messages[m], { unsaved: true, dbError: err.message });
+    status.unsaved++;
+    status.lastError = `not saved: ${err.message}`;
+  }
+  status.last = { label: view.label, message: m, of, ...view.messages[m] };
+  return nextSessionId;
+}
+
 export async function run(model, rows) {
   const groups = groupBySession(rows);
   Object.assign(status, {
-    state: "starting agent", model, done: 0, total: rows.length, failures: 0, lastError: "",
+    state: "starting agent", model, done: 0, total: rows.length, failures: 0, unsaved: 0, lastError: "",
     current: null, last: null,
     // Per-session view for the page; each message gets its result once answered.
     sessions: groups.map((group, i) => ({
@@ -64,24 +114,13 @@ export async function run(model, rows) {
       const view = status.sessions[s];
       let sessionId = "";
       for (const [m, { question, answer }] of conversation.entries()) {
-        const started = Date.now();
-        view.messages[m].state = "running";
-        status.current = { session: s, label: view.label, message: m, of: conversation.length, question, sessionId, startedAt: started };
-        const result = await ask(question, sessionId);
-        // A failed turn returns no session; keep the old one so the follow-ups still have context.
-        sessionId = result.sessionId || sessionId;
-        const latency_ms = Date.now() - started;
-        await insertResult({ ...result, sessionId, prompt: question, expected_answer: answer, latency_ms }, model, runId);
-        Object.assign(view.messages[m], { ...result, sessionId, latency_ms, state: result.ok ? "ok" : "failed" });
-        view.agentSessionId = sessionId;
-        status.last = { label: view.label, message: m, of: conversation.length, ...view.messages[m] };
-        status.current = null;
-        status.done++;
-        if (!result.ok) { status.failures++; status.lastError = result.error; }
+        sessionId = await answerOne({ view, s, m, of: conversation.length, question, answer, sessionId, model, runId });
       }
     }
     status.state = "finished";
   } catch (err) {
+    console.error(`[run] stopped: ${err.message}`);
+    markAborted(status.sessions, err.message);
     Object.assign(status, { state: "failed", lastError: err.message, current: null });
   }
 }

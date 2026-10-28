@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { parseJsonl, groupBySession } from "../benchmark.mjs";
+import { parseJsonl, groupBySession, withRetry, markAborted } from "../benchmark.mjs";
 import { parseSse, withEnv } from "../agent.mjs";
 import { parseOllamaList, fingerprint } from "../ollama.mjs";
 import { pkcePair } from "../oauth.mjs";
@@ -87,4 +87,31 @@ test("pkcePair derives an S256 challenge from the verifier", () => {
   const { verifier, challenge } = pkcePair();
   assert.match(verifier, /^[A-Za-z0-9_-]{43}$/);
   assert.equal(challenge, createHash("sha256").update(verifier).digest("base64url"));
+});
+
+test("withRetry returns once fn succeeds", async () => {
+  let calls = 0;
+  const value = await withRetry(async () => { if (++calls < 3) throw new Error("EAI_AGAIN"); return "saved"; }, [0, 0, 0, 0]);
+  assert.equal(value, "saved");
+  assert.equal(calls, 3);
+});
+
+test("withRetry rethrows the last error after all attempts", async () => {
+  let calls = 0;
+  await assert.rejects(withRetry(async () => { calls++; throw new Error(`fail ${calls}`); }, [0, 0]), /fail 3/);
+  assert.equal(calls, 3);
+});
+
+test("markAborted fails the message in flight and skips the rest", () => {
+  const sessions = [
+    { messages: [{ state: "ok" }, { state: "running" }] },
+    { messages: [{ state: "pending" }, { state: "pending" }] },
+  ];
+  markAborted(sessions, "agent not healthy");
+  assert.deepEqual(sessions.flatMap((s) => s.messages), [
+    { state: "ok" },
+    { state: "failed", error: "agent not healthy" },
+    { state: "skipped" },
+    { state: "skipped" },
+  ]);
 });

@@ -28,7 +28,7 @@
     .stats { color: var(--muted); font-weight: normal; }
     .facts { display: flex; flex-wrap: wrap; gap: 4px 16px; color: var(--muted); font-size: 14px; }
     .muted { color: var(--muted); }
-    .ok { color: var(--ok); } .failed, .bad { color: var(--bad); } .running { color: var(--run); } .pending { color: var(--muted); }
+    .ok { color: var(--ok); } .failed, .bad { color: var(--bad); } .running, .unsaved { color: var(--run); } .pending, .skipped { color: var(--muted); }
     .mono { font-family: ui-monospace, monospace; font-size: 13px; }
   </style>
 </head>
@@ -75,7 +75,7 @@
 <script>
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
-  const ICON = { pending: "○", running: "◐", ok: "✓", failed: "✗" };
+  const ICON = { pending: "○", running: "◐", ok: "✓", failed: "✗", skipped: "⊘" };
   let jsonl = "";
   let current = null, currentSeenAt = 0, lastSessionsJson = "";
   const open = new Set(); // keys of expanded <details>, kept across re-renders
@@ -115,6 +115,7 @@
   function resultFacts(r) {
     return `<div class="facts">
       <span class="${r.state}">${ICON[r.state]} ${r.state}</span>
+      ${r.unsaved ? `<span class="unsaved">not saved: ${esc(r.dbError)}</span>` : ""}
       <span>latency ${duration(r.latency_ms)}</span>
       <span>turns ${r.turns ?? 0}</span>
       <span>tool calls ${r.toolCalls ?? 0}${r.tools?.length ? ` (${esc([...new Set(r.tools)].join(", "))})` : ""}</span>
@@ -156,10 +157,10 @@
     const avg = answered.length ? answered.reduce((n, m) => n + m.latency_ms, 0) / answered.length : null;
     const tools = answered.reduce((n, m) => n + (m.toolCalls ?? 0), 0);
     const cost = answered.reduce((n, m) => n + (m.costUsd ?? 0), 0);
-    const state = messages.some((m) => m.state === "running") ? "running"
-      : answered.length < messages.length ? "pending"
-      : ok === answered.length ? "ok" : "failed";
-    return { answered: answered.length, ok, failed: answered.length - ok, avg, tools, cost, state };
+    const unsaved = messages.filter((m) => m.unsaved).length;
+    const has = (s) => messages.some((m) => m.state === s);
+    const state = ["running", "pending", "failed", "skipped"].find(has) ?? "ok";
+    return { answered: answered.length, ok, failed: answered.length - ok, unsaved, avg, tools, cost, state };
   }
 
   function renderSessions(sessions) {
@@ -178,14 +179,14 @@
           : `<div class="muted">Expected</div><pre>${esc(m.expected || "(none)")}</pre>`;
         return `<tr>
           <td>${mi + 1}</td>
-          <td class="${m.state}">${ICON[m.state]} ${m.state}</td>
+          <td class="${m.state}">${ICON[m.state]} ${m.state}${m.unsaved ? ` <span class="unsaved">· not saved</span>` : ""}</td>
           <td>${details(`${si}-${mi}`, esc(m.question.length > 120 ? m.question.slice(0, 120) + "…" : m.question), `<pre>${esc(m.question)}</pre>${body}`)}</td>
           <td>${answered ? duration(m.latency_ms) : "–"}</td>
-          <td>${answered ? m.toolCalls : "–"}</td>
+          <td>${answered ? m.toolCalls ?? 0 : "–"}</td>
         </tr>`;
       }).join("");
       const summary = `<span class="${st.state}">${ICON[st.state]}</span> ${esc(s.label)}
-        <span class="stats">· ${st.answered}/${s.messages.length} answered · ${st.ok} ok · ${st.failed} failed · avg ${duration(st.avg)} · ${st.tools} tool calls · $${st.cost.toFixed(4)}</span>`;
+        <span class="stats">· ${st.answered}/${s.messages.length} answered · ${st.ok} ok · ${st.failed} failed${st.unsaved ? ` · <span class="unsaved">${st.unsaved} not saved</span>` : ""} · avg ${duration(st.avg)} · ${st.tools} tool calls · $${st.cost.toFixed(4)}</span>`;
       const table = `<table><thead><tr><th>#</th><th>Status</th><th>Question</th><th>Latency</th><th>Tools</th></tr></thead><tbody>${rows}</tbody></table>
         <div class="muted mono">agent session ${esc(s.agentSessionId || "–")}</div>`;
       return `<div class="session">${details(`s${si}`, summary, table)}</div>`;
@@ -202,7 +203,7 @@
       $("run-model").textContent = run.model ? `(${run.model})` : "";
       $("bar").max = run.total || 1;
       $("bar").value = run.done;
-      $("counts").textContent = `${run.done} / ${run.total} answered, ${run.failures} failed`;
+      $("counts").textContent = `${run.done} / ${run.total} answered, ${run.failures} failed` + (run.unsaved ? `, ${run.unsaved} not saved` : "");
       $("last-error").textContent = run.lastError;
       current = run.current;
       currentSeenAt = Date.now();
