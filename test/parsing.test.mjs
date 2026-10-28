@@ -1,0 +1,90 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { parseJsonl, groupBySession } from "../benchmark.mjs";
+import { parseSse, withEnv } from "../agent.mjs";
+import { parseOllamaList, fingerprint } from "../ollama.mjs";
+import { pkcePair } from "../oauth.mjs";
+
+test("parseJsonl skips blank lines and defaults answer and session", () => {
+  const rows = parseJsonl('{"session":"a","question":"q1","answer":"x"}\n\n{"question":"q2"}\r\n');
+  assert.deepEqual(rows, [
+    { session: "a", question: "q1", answer: "x" },
+    { session: null, question: "q2", answer: "" },
+  ]);
+});
+
+test("parseJsonl reports the bad line", () => {
+  assert.throws(() => parseJsonl('{"question":"ok"}\nnot json'), /line 2: not valid JSON/);
+  assert.throws(() => parseJsonl('{"answer":"no question"}'), /line 1: "question" missing/);
+});
+
+test("groupBySession keeps order, needs no minimum, and isolates rows without a session", () => {
+  const rows = [
+    { session: "a", question: "1" },
+    { session: null, question: "2" },
+    { session: "b", question: "3" },
+    { session: "a", question: "4" },
+    { session: null, question: "5" },
+  ];
+  const groups = groupBySession(rows).map((g) => g.map((r) => r.question));
+  assert.deepEqual(groups, [["1", "4"], ["2"], ["3"], ["5"]]);
+});
+
+const sse = (event, data) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+
+test("parseSse builds a result row from the stream", () => {
+  const text =
+    sse("delta", { text: "Hel" }) +
+    sse("tool", { tool: "Bash" }) +
+    sse("delta", { text: "lo" }) +
+    sse("tool", { tool: "Read" }) +
+    sse("action-proposal", {}) +
+    sse("result", { sessionId: "s1", costUsd: 0.5, turns: 3, reply: "Hello" }) +
+    sse("done", { sessionId: "s1" });
+  assert.deepEqual(parseSse(text), {
+    ok: true, reply: "Hello", error: "", sessionId: "s1", costUsd: 0.5, turns: 3,
+    tools: ["Bash", "Read"], toolCalls: 2, proposals: 1, deltaChars: 5,
+  });
+});
+
+test("parseSse marks errors as not ok and falls back to done", () => {
+  const r = parseSse(sse("error", { error: "boom" }) + sse("done", { sessionId: "s2", turns: 1 }));
+  assert.equal(r.ok, false);
+  assert.equal(r.error, "boom");
+  assert.equal(r.sessionId, "s2");
+  assert.equal(r.turns, 1);
+  assert.equal(parseSse(sse("error", { code: "AttachmentRejected", reason: "too big" })).error, "too big");
+});
+
+test("parseSse of an empty body is an empty failed row", () => {
+  assert.deepEqual(parseSse(""), {
+    ok: false, reply: "", error: "", sessionId: "", costUsd: 0, turns: 0,
+    tools: [], toolCalls: 0, proposals: 0, deltaChars: 0,
+  });
+});
+
+test("withEnv replaces only the given keys", () => {
+  const env = ["PORT=8090", "CLAUDE_CHAT_MODEL=old", "ANTHROPIC_BASE_URL=http://a=b"];
+  assert.deepEqual(withEnv(env, { CLAUDE_CHAT_MODEL: "new" }), [
+    "PORT=8090", "ANTHROPIC_BASE_URL=http://a=b", "CLAUDE_CHAT_MODEL=new",
+  ]);
+  assert.deepEqual(withEnv(undefined, { A: "1" }), ["A=1"]);
+});
+
+test("parseOllamaList returns the NAME column", () => {
+  const out = "NAME                ID              SIZE      MODIFIED\nqwen3.8:27B   abc   17 GB   2 days ago\r\nllama3.2:latest  def  2 GB  3 weeks ago\n\n";
+  assert.deepEqual(parseOllamaList(out), ["qwen3.8:27B", "llama3.2:latest"]);
+});
+
+test("fingerprint matches the OpenSSH SHA256 format", () => {
+  const key = Buffer.from("host-key-blob");
+  const expected = "SHA256:" + createHash("sha256").update(key).digest("base64").replace(/=+$/, "");
+  assert.equal(fingerprint(key), expected);
+});
+
+test("pkcePair derives an S256 challenge from the verifier", () => {
+  const { verifier, challenge } = pkcePair();
+  assert.match(verifier, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(challenge, createHash("sha256").update(verifier).digest("base64url"));
+});

@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Model Benchmark</title>
+  <style>
+    :root { --bg: #fafafa; --fg: #1a1a1a; --muted: #666; --card: #fff; --border: #ddd; --accent: #2563eb; --ok: #15803d; --bad: #b91c1c; --run: #b45309; --code: #f3f4f6; }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #111; --fg: #eee; --muted: #999; --card: #1b1b1b; --border: #333; --accent: #60a5fa; --ok: #4ade80; --bad: #f87171; --run: #fbbf24; --code: #262626; }
+    }
+    body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; }
+    main { max-width: 1000px; margin: 32px auto; padding: 0 16px; }
+    section { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+    h2 { font-size: 16px; margin: 0 0 8px; }
+    label { display: block; margin: 12px 0 4px; font-weight: 600; }
+    select, input[type=file] { width: 100%; }
+    button, a.button { margin-top: 16px; padding: 8px 16px; border: 0; border-radius: 6px; background: var(--accent); color: #fff; font: inherit; cursor: pointer; text-decoration: none; display: inline-block; }
+    button:disabled { opacity: .5; cursor: default; }
+    progress { width: 100%; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { text-align: left; padding: 6px 8px; border-top: 1px solid var(--border); vertical-align: top; }
+    th { color: var(--muted); font-weight: 600; }
+    pre { white-space: pre-wrap; word-break: break-word; background: var(--code); padding: 8px; border-radius: 6px; margin: 4px 0 8px; max-height: 320px; overflow: auto; font: 13px/1.45 ui-monospace, monospace; }
+    details > summary { cursor: pointer; }
+    .session { border-top: 1px solid var(--border); padding: 8px 0; }
+    .session > summary { font-weight: 600; }
+    .stats { color: var(--muted); font-weight: normal; }
+    .facts { display: flex; flex-wrap: wrap; gap: 4px 16px; color: var(--muted); font-size: 14px; }
+    .muted { color: var(--muted); }
+    .ok { color: var(--ok); } .failed, .bad { color: var(--bad); } .running { color: var(--run); } .pending { color: var(--muted); }
+    .mono { font-family: ui-monospace, monospace; font-size: 13px; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Model benchmark</h1>
+
+  <section id="login" hidden>
+    <p>Sign in with your CheckNet account so the benchmark can call the agent.</p>
+    <a class="button" href="/login">Log in</a>
+  </section>
+
+  <section id="setup" hidden>
+    <label for="file">Questions (.jsonl)</label>
+    <input id="file" type="file" accept=".jsonl,.json,.txt">
+    <label for="model">Model</label>
+    <select id="model"><option value="">Loading models…</option></select>
+    <button id="start" disabled>Start benchmark</button>
+    <p id="message" class="muted"></p>
+  </section>
+
+  <section id="progress-box" hidden>
+    <h2><span id="state"></span> <span id="run-model" class="muted"></span></h2>
+    <progress id="bar" value="0" max="1"></progress>
+    <div id="counts" class="muted"></div>
+    <div id="last-error" class="bad"></div>
+  </section>
+
+  <section id="current-box" hidden>
+    <h2>Current request</h2>
+    <div id="current"></div>
+  </section>
+
+  <section id="last-box" hidden>
+    <h2>Last result</h2>
+    <div id="last"></div>
+  </section>
+
+  <section id="sessions-box" hidden>
+    <h2>Sessions</h2>
+    <div id="sessions"></div>
+  </section>
+</main>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  const ICON = { pending: "○", running: "◐", ok: "✓", failed: "✗" };
+  let jsonl = "";
+  let current = null, currentSeenAt = 0, lastSessionsJson = "";
+  const open = new Set(); // keys of expanded <details>, kept across re-renders
+
+  function duration(ms) {
+    if (ms == null) return "–";
+    const s = ms / 1000;
+    if (s < 60) return `${s.toFixed(1)} s`;
+    return `${Math.floor(s / 60)}m ${String(Math.floor(s % 60)).padStart(2, "0")}s`;
+  }
+
+  async function api(path, options) {
+    const res = await fetch(path, options);
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || res.statusText);
+    return body;
+  }
+
+  function updateStart() {
+    $("start").disabled = !jsonl || !$("model").value;
+  }
+
+  async function loadModels() {
+    try {
+      const models = await api("/api/models");
+      $("model").replaceChildren(new Option("Choose a model", ""), ...models.map((m) => new Option(m, m)));
+    } catch (err) {
+      $("model").replaceChildren(new Option("Could not load models", ""));
+      $("message").textContent = err.message;
+    }
+  }
+
+  function details(key, summary, body) {
+    return `<details data-key="${esc(key)}"${open.has(key) ? " open" : ""}><summary>${summary}</summary>${body}</details>`;
+  }
+
+  function resultFacts(r) {
+    return `<div class="facts">
+      <span class="${r.state}">${ICON[r.state]} ${r.state}</span>
+      <span>latency ${duration(r.latency_ms)}</span>
+      <span>turns ${r.turns ?? 0}</span>
+      <span>tool calls ${r.toolCalls ?? 0}${r.tools?.length ? ` (${esc([...new Set(r.tools)].join(", "))})` : ""}</span>
+      <span>proposals ${r.proposals ?? 0}</span>
+      <span>cost $${Number(r.costUsd ?? 0).toFixed(4)}</span>
+      <span class="mono">session ${esc(r.sessionId || "–")}</span>
+    </div>`;
+  }
+
+  function renderCurrent() {
+    $("current-box").hidden = !current;
+    if (!current) return;
+    const elapsed = current.elapsedMs + (Date.now() - currentSeenAt);
+    $("current").innerHTML = `
+      <div class="facts">
+        <span>session <strong>${esc(current.label)}</strong></span>
+        <span>message ${current.message + 1} of ${current.of}</span>
+        <span class="mono">agent session ${esc(current.sessionId || "new")}</span>
+        <span class="running">waiting ${duration(elapsed)}</span>
+      </div>
+      <pre>${esc(current.question)}</pre>`;
+  }
+
+  function renderLast(last) {
+    $("last-box").hidden = !last;
+    if (!last) return;
+    $("last").innerHTML = `
+      <div class="facts"><span>session <strong>${esc(last.label)}</strong></span><span>message ${last.message + 1} of ${last.of}</span></div>
+      ${resultFacts(last)}
+      ${last.error ? `<div class="bad">${esc(last.error)}</div>` : ""}
+      <div class="muted">Question</div><pre>${esc(last.question)}</pre>
+      <div class="muted">Reply</div><pre>${esc(last.reply || "(empty)")}</pre>
+      <div class="muted">Expected</div><pre>${esc(last.expected || "(none)")}</pre>`;
+  }
+
+  function sessionStats(messages) {
+    const answered = messages.filter((m) => m.state === "ok" || m.state === "failed");
+    const ok = answered.filter((m) => m.state === "ok").length;
+    const avg = answered.length ? answered.reduce((n, m) => n + m.latency_ms, 0) / answered.length : null;
+    const tools = answered.reduce((n, m) => n + (m.toolCalls ?? 0), 0);
+    const cost = answered.reduce((n, m) => n + (m.costUsd ?? 0), 0);
+    const state = messages.some((m) => m.state === "running") ? "running"
+      : answered.length < messages.length ? "pending"
+      : ok === answered.length ? "ok" : "failed";
+    return { answered: answered.length, ok, failed: answered.length - ok, avg, tools, cost, state };
+  }
+
+  function renderSessions(sessions) {
+    const json = JSON.stringify(sessions);
+    if (json === lastSessionsJson) return;
+    lastSessionsJson = json;
+    $("sessions-box").hidden = !sessions.length;
+    $("sessions").innerHTML = sessions.map((s, si) => {
+      const st = sessionStats(s.messages);
+      const rows = s.messages.map((m, mi) => {
+        const answered = m.state === "ok" || m.state === "failed";
+        const body = answered
+          ? `${resultFacts(m)}${m.error ? `<div class="bad">${esc(m.error)}</div>` : ""}
+             <div class="muted">Reply</div><pre>${esc(m.reply || "(empty)")}</pre>
+             <div class="muted">Expected</div><pre>${esc(m.expected || "(none)")}</pre>`
+          : `<div class="muted">Expected</div><pre>${esc(m.expected || "(none)")}</pre>`;
+        return `<tr>
+          <td>${mi + 1}</td>
+          <td class="${m.state}">${ICON[m.state]} ${m.state}</td>
+          <td>${details(`${si}-${mi}`, esc(m.question.length > 120 ? m.question.slice(0, 120) + "…" : m.question), `<pre>${esc(m.question)}</pre>${body}`)}</td>
+          <td>${answered ? duration(m.latency_ms) : "–"}</td>
+          <td>${answered ? m.toolCalls : "–"}</td>
+        </tr>`;
+      }).join("");
+      const summary = `<span class="${st.state}">${ICON[st.state]}</span> ${esc(s.label)}
+        <span class="stats">· ${st.answered}/${s.messages.length} answered · ${st.ok} ok · ${st.failed} failed · avg ${duration(st.avg)} · ${st.tools} tool calls · $${st.cost.toFixed(4)}</span>`;
+      const table = `<table><thead><tr><th>#</th><th>Status</th><th>Question</th><th>Latency</th><th>Tools</th></tr></thead><tbody>${rows}</tbody></table>
+        <div class="muted mono">agent session ${esc(s.agentSessionId || "–")}</div>`;
+      return `<div class="session">${details(`s${si}`, summary, table)}</div>`;
+    }).join("");
+  }
+
+  async function poll() {
+    try {
+      const { loggedIn, run } = await api("/api/status");
+      $("login").hidden = loggedIn;
+      if (loggedIn && $("setup").hidden) { $("setup").hidden = false; loadModels(); }
+      $("progress-box").hidden = run.state === "idle";
+      $("state").textContent = run.state;
+      $("run-model").textContent = run.model ? `(${run.model})` : "";
+      $("bar").max = run.total || 1;
+      $("bar").value = run.done;
+      $("counts").textContent = `${run.done} / ${run.total} answered, ${run.failures} failed`;
+      $("last-error").textContent = run.lastError;
+      current = run.current;
+      currentSeenAt = Date.now();
+      renderCurrent();
+      renderLast(run.last);
+      renderSessions(run.sessions ?? []);
+    } catch (err) {
+      $("message").textContent = err.message;
+    }
+  }
+
+  // toggle does not bubble, so listen in the capture phase.
+  document.addEventListener("toggle", (e) => {
+    const key = e.target.dataset?.key;
+    if (key) e.target.open ? open.add(key) : open.delete(key);
+  }, true);
+
+  $("file").addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    jsonl = file ? await file.text() : "";
+    updateStart();
+  });
+  $("model").addEventListener("change", updateStart);
+  $("start").addEventListener("click", async () => {
+    $("message").textContent = "";
+    try {
+      const { total } = await api("/api/run", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: $("model").value, jsonl }),
+      });
+      $("message").textContent = `Started with ${total} questions.`;
+      open.clear();
+      poll();
+    } catch (err) {
+      $("message").textContent = err.message;
+    }
+  });
+
+  poll();
+  setInterval(poll, 2000);
+  setInterval(renderCurrent, 1000); // keep the waiting time ticking between polls
+</script>
+</body>
+</html>

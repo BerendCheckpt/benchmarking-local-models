@@ -1,0 +1,26 @@
+# The benchmark app only. It joins the existing postgres and claude-agent
+# containers and does not manage their lifecycle (apart from recreating the
+# agent with a new model).
+services:
+  benchmark:
+    build: .
+    env_file: .env
+    ports:
+      - "127.0.0.1:4202:4202" # page + OAuth redirect (http://127.0.0.1:4202)
+    extra_hosts:
+      - "host.docker.internal:host-gateway" # agent's published port
+    # The Docker socket is root:root 0660; group 0 lets the node user open it.
+    # Mounting it gives this container control over Docker on the host, which
+    # is why the page is bound to 127.0.0.1 only.
+    group_add:
+      - "0"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data:/data
+    networks:
+      - pg
+
+networks:
+  pg:
+    external: true
+    name: ${PG_NETWORK:-local-model-benchmark_default}

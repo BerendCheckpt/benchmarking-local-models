@@ -1,0 +1,16 @@
+{
+  "name": "benchmarking-local-models",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Benchmark local Ollama models through the cnu-claude-agent /chat endpoint.",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test --experimental-test-coverage --test-reporter=spec --test-reporter-destination=stdout --test-reporter=lcov --test-reporter-destination=lcov.info \"test/*.test.mjs\""
+  },
+  "dependencies": {
+    "pg": "^8.13.1",
+    "ssh2": "^1.16.0"
+  }
+}
