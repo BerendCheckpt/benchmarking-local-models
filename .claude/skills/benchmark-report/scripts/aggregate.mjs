@@ -121,16 +121,50 @@ for (const r of asked.filter((r) => r.flags?.includes("better-than-expected"))) 
   console.log(`- ${r.id} [${r.category}] ${r.question.slice(0, 80).replace(/\s+/g, " ")} :: ${r.verdict}`);
 }
 
-// The report's appendix, one row per message in the order they were asked.
+// The report's appendix: grouped by session, sessions and their messages in
+// created_at order (the order the run asked them). Backfilled runs share one
+// created_at, so the input order (id) breaks ties.
+const byCreated = (a, b) => String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? "")) || a.id - b.id;
+const sessionOrder = new Map();
+for (const r of [...all].sort(byCreated)) if (!sessionOrder.has(r.session)) sessionOrder.set(r.session, sessionOrder.size);
+const bySession = new Map();
+for (const r of [...all].sort((a, b) => sessionOrder.get(a.session) - sessionOrder.get(b.session) || byCreated(a, b))) {
+  if (!bySession.has(r.session)) bySession.set(r.session, []);
+  bySession.get(r.session).push(r);
+}
 const cell = (s) => String(s ?? "").replace(/\s+/g, " ").replace(/\|/g, "\\|");
 const code = { answered: "ans", "out of time": "time", "token limit": "tok", "transport error": "net" };
+const short = (s) => String(s).slice(0, 8);
+const heading = (list) => `${short(list[0].session)} · ${list.length} ${list.length === 1 ? "turn" : "turns"}`;
+// GitHub-style anchor of a heading: lower case, punctuation dropped, spaces to hyphens.
+const slug = (text) => text.toLowerCase().replace(/[^\w\- ]/g, "").replace(/ /g, "-");
+const messageRow = (r, turn, of) => `| ${turn}/${of} | ${r.id} | ${r.askedAt?.slice(0, 10) ?? ""} | ${cell(r.question.slice(0, 120))} | `
+  + (r.skipReason ? `| | | | skip | – | ${cell(r.skipReason)} |`
+    : `${r.category} | ${r.persona} | ${[].concat(r.access).join(", ")} | ${r.answerable[0].toUpperCase()} | `
+      + `${code[outcome(r)]}${r.contextRecap ? " R" : ""} | ${r.score} | ${cell(r.verdict)} |`);
+// One row per session in the sessions table, each linking to its own message table below.
 const appendix = [
-  "| # | Session | Asked | Question | Type | Persona | Access | Ans. | Outcome | Score | Verdict |",
-  "|---|---|---|---|---|---|---|---|---|---|---|",
-  ...all.map((r) => `| ${r.id} | \`${String(r.session).slice(0, 8)}\` | ${r.askedAt?.slice(0, 10) ?? ""} | ${cell(r.question.slice(0, 120))} | `
-    + (r.skipReason ? `| | | | skip | – | ${cell(r.skipReason)} |`
-      : `${r.category} | ${r.persona} | ${[].concat(r.access).join(", ")} | ${r.answerable[0].toUpperCase()} | `
-        + `${code[outcome(r)]}${r.contextRecap ? " R" : ""} | ${r.score} | ${cell(r.verdict)} |`)),
+  "### Sessions",
+  "",
+  "| Session | Turns | Asked | Mean score | Answered | Out of time | Token limit | Failed | Skipped |",
+  "|---|---|---|---|---|---|---|---|---|",
+  ...[...bySession.values()].map((list) => {
+    const asked = list.filter((r) => !r.skipReason);
+    const n = (o) => asked.filter((r) => outcome(r) === o).length;
+    const dates = list.map((r) => r.askedAt?.slice(0, 10) ?? "").sort();
+    return `| [${short(list[0].session)}](#${slug(heading(list))}) | ${list.length} | ${dates[0] === dates.at(-1) ? dates[0] : `${dates[0]} to ${dates.at(-1)}`} | `
+      + `${mean(asked)} | ${n("answered")} | ${n("out of time")} | ${n("token limit")} | ${n("transport error")} | ${list.length - asked.length} |`;
+  }),
+  "",
+  "### Messages by session",
+  ...[...bySession.values()].flatMap((list) => [
+    "",
+    `#### ${heading(list)}`,
+    "",
+    "| Turn | # | Asked | Question | Type | Persona | Access | Ans. | Outcome | Score | Verdict |",
+    "|---|---|---|---|---|---|---|---|---|---|---|",
+    ...list.map((r, i) => messageRow(r, i + 1, list.length)),
+  ]),
 ];
 writeFileSync(join(dir, "appendix.md"), appendix.join("\n") + "\n");
 console.log(`\nAppendix table written to ${join(dir, "appendix.md")}`);
