@@ -4,3 +4,4 @@ data/
 lcov.info
 .scannerwork/
 *.sw?
+reports/work/
