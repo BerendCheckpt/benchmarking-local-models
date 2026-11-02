@@ -103,6 +103,15 @@ Write `reports/run-<run_id>.md` with these sections, in this order:
 9. **Appendix**: the generated `appendix.md`, with a key for the outcome and
    answerability codes. The outcome codes are `ans`, `time`, `tok`, `net` and `skip`;
    `R` marks a recapped message.
+   It is **grouped by session, then ordered by `created_at`**: the order the run
+   asked them. Don't sort by `askedAt` (the original question date) or any other
+   column, and don't split the sessions into parts. Where a run's rows share one
+   backfilled `created_at`, the input order breaks the tie.
+   - A sessions table comes first: one row per session, linking to its section.
+   - Then one section per session, holding that session's message table (Turn
+     is the message's position in its session).
+   - In a Claude Docs doc, which has no collapsible block, use the same shape. The
+     links go to the session headings' block ids.
 
 If an earlier report exists for the same input, add a short comparison: the same
 questions, what changed in setup, and the score deltas per type.

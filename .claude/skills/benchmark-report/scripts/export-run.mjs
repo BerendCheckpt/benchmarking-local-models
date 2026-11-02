@@ -27,7 +27,7 @@ if (!Number.isInteger(runId)) throw new Error(`not a run id: ${args.run}`);
 // timestamp) is the order the run asked the messages in.
 const rows = JSON.parse(psql(`
   SELECT coalesce(json_agg(t ORDER BY t.n), '[]') FROM (
-    SELECT row_number() OVER (ORDER BY created_at, ctid) AS n, created_at AS ts, model, "sessionId", prompt, expected_answer, reply, ok,
+    SELECT row_number() OVER (ORDER BY created_at, ctid)::int AS n, created_at AS ts, model, "sessionId", prompt, expected_answer, reply, ok,
            token_limit, skip_reason, context_recap, error, latency_ms, tools, "toolCalls", turns
     FROM benchmark_results.rsults WHERE run_id = ${runId}
   ) t`));
@@ -53,6 +53,8 @@ if (args.input) {
 
 const items = pairs.map(({ r, line }, i) => ({
   id: i + 1,
+  createdAt: r.ts,
+  seq: r.n, // insertion order; breaks created_at ties in backfilled runs
   session: line?.session ?? r.sessionId,
   askedAt: line?.askedAt ?? null,
   needs: line?.needs ?? null,
