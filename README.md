@@ -241,10 +241,15 @@ In Claude Code, opened in this repository, run:
 
 ```text
 /benchmark-report [run_id] [input.jsonl]
+/benchmark-report today
+/benchmark-report 2026-10-28 2026-11-02
 ```
 
 Without arguments it takes the most recent run and finds the matching input file
-in `Benchmark tests local models`. It writes `reports/run-<run_id>.md`. In that
+in `Benchmark tests local models`. It writes `reports/run-<run_id>.md`. `today`
+covers every run that ended today, and a date range every run that ended in it
+(both days included); those write one combined report, `reports/runs-<from>_<to>.md`,
+with a per-run breakdown. A run that is still going is left out. In that
 report every answer is categorized by question type and persona and scored 0–3
 against the production reference. The scores are weighted by question type,
 persona and what the agent could access. `reports/run-1793258147.md` is an
@@ -253,7 +258,7 @@ example.
 The skill is in `.claude/skills/benchmark-report/`:
 - `SKILL.md`: the steps.
 - `rubric.md`: the judging rubric.
-- `scripts/export-run.mjs`: exports the run from Postgres.
+- `scripts/export-run.mjs`: exports a run, or the runs in a date window, from Postgres.
 - `scripts/aggregate.mjs`: weights and tables.
 
 Working files go to `reports/work/`, which is git-ignored. The appendix of a
