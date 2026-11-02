@@ -12,7 +12,8 @@
 
   <section id="login" hidden>
     <p>Sign in with your CheckNet account so the benchmark can call the agent.</p>
-    <a class="button" href="/login">Log in</a>
+    <a class="button" id="login-link" href="/login">Log in</a>
+    <p id="login-note" class="muted"></p>
   </section>
 
   <section id="setup" hidden>
@@ -51,6 +52,40 @@
 <script>
   let jsonl = "";
   let current = null, currentSeenAt = 0, lastSessionsJson = "";
+  let loginOpened = false; // opened once each time the app becomes logged out
+
+  // The CheckNet login in a pop-up, centred on this window. Returns false when the browser blocked it.
+  function openLogin() {
+    const w = 520, h = 700;
+    const left = Math.round(window.screenX + (window.outerWidth - w) / 2);
+    const top = Math.round(window.screenY + (window.outerHeight - h) / 2);
+    const popup = window.open("/login", "cnu-login", `popup,width=${w},height=${h},left=${left},top=${top}`);
+    if (popup) popup.focus();
+    return !!popup;
+  }
+
+  // No token, or the refresh token was rejected: open the login once. A browser
+  // blocks a pop-up that is not opened from a click, so the button stays as a fallback.
+  function promptLogin() {
+    if (loginOpened) return;
+    loginOpened = true;
+    $("login-note").textContent = openLogin()
+      ? "The login window is open. Sign in there with your QA account."
+      : "Your browser blocked the login window. Use Log in to open it.";
+  }
+
+  $("login-link").addEventListener("click", (e) => {
+    if (openLogin()) {
+      e.preventDefault();
+      $("login-note").textContent = "The login window is open. Sign in there with your QA account.";
+    } // blocked: let the link log in in this tab instead
+  });
+
+  window.addEventListener("message", (e) => {
+    if (e.origin !== location.origin || e.data?.type !== "login-done") return;
+    $("login-note").textContent = e.data.error ? `Login failed: ${e.data.error}` : "";
+    poll();
+  });
 
   function updateStart() {
     $("start").disabled = !jsonl || !$("model").value;
@@ -132,6 +167,8 @@
     try {
       const { loggedIn, run } = await api("/api/status");
       $("login").hidden = loggedIn;
+      if (loggedIn) loginOpened = false;
+      else promptLogin();
       if (loggedIn && $("setup").hidden) { $("setup").hidden = false; loadModels(); }
       $("progress-box").hidden = run.state === "idle";
       $("state").textContent = run.state;
