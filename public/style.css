@@ -1,0 +1,30 @@
+:root { --bg: #fafafa; --fg: #1a1a1a; --muted: #666; --card: #fff; --border: #ddd; --accent: #2563eb; --ok: #15803d; --bad: #b91c1c; --run: #b45309; --code: #f3f4f6; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #111; --fg: #eee; --muted: #999; --card: #1b1b1b; --border: #333; --accent: #60a5fa; --ok: #4ade80; --bad: #f87171; --run: #fbbf24; --code: #262626; }
+}
+body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; }
+main { max-width: 1000px; margin: 32px auto; padding: 0 16px; }
+header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
+header a { color: var(--accent); }
+section { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+h2 { font-size: 16px; margin: 0 0 8px; }
+label { display: block; margin: 12px 0 4px; font-weight: 600; }
+select, input[type=file] { width: 100%; }
+button, a.button { margin-top: 16px; padding: 8px 16px; border: 0; border-radius: 6px; background: var(--accent); color: #fff; font: inherit; cursor: pointer; text-decoration: none; display: inline-block; }
+button:disabled { opacity: .5; cursor: default; }
+progress { width: 100%; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { text-align: left; padding: 6px 8px; border-top: 1px solid var(--border); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; }
+pre { white-space: pre-wrap; word-break: break-word; background: var(--code); padding: 8px; border-radius: 6px; margin: 4px 0 8px; max-height: 320px; overflow: auto; font: 13px/1.45 ui-monospace, monospace; }
+details > summary { cursor: pointer; }
+.session { border-top: 1px solid var(--border); padding: 8px 0; }
+.session > details > summary { font-weight: 600; }
+.stats { color: var(--muted); font-weight: normal; }
+.facts { display: flex; flex-wrap: wrap; gap: 4px 16px; color: var(--muted); font-size: 14px; }
+.muted { color: var(--muted); }
+.ok { color: var(--ok); } .failed, .bad { color: var(--bad); } .running, .unsaved, .token-limit { color: var(--run); } .pending, .skipped { color: var(--muted); } .recap { color: var(--accent); }
+.mono { font-family: ui-monospace, monospace; font-size: 13px; }
+.filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0 16px; }
+.filters input, .filters select { width: 100%; box-sizing: border-box; font: inherit; }
+.filters label { margin-top: 0; }

@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Benchmark Results</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main>
+  <header><h1>Benchmark results</h1><a href="/">Benchmark</a></header>
+
+  <section>
+    <div class="filters">
+      <div><label for="model">Model</label><select id="model"><option value="">All models</option></select></div>
+      <div><label for="from">From</label><input id="from" type="date"></div>
+      <div><label for="to">To</label><input id="to" type="date"></div>
+      <div><label for="min">Min messages / session</label><input id="min" type="number" min="0" step="1"></div>
+      <div><label for="max">Max messages / session</label><input id="max" type="number" min="0" step="1"></div>
+    </div>
+    <p id="summary" class="muted"></p>
+  </section>
+
+  <section>
+    <div id="runs" class="muted">Loading…</div>
+  </section>
+</main>
+<script src="/common.js"></script>
+<script>
+  let request = 0;
+
+  // Local calendar days to instants: From is inclusive, To includes the whole day.
+  function filters() {
+    const p = new URLSearchParams();
+    const day = (id, offset) => {
+      const v = $(id).value;
+      if (!v) return null;
+      const d = new Date(`${v}T00:00`);
+      d.setDate(d.getDate() + offset);
+      return d.toISOString();
+    };
+    const set = (k, v) => { if (v !== null && v !== "") p.set(k, v); };
+    set("model", $("model").value);
+    set("from", day("from", 0));
+    set("to", day("to", 1));
+    set("minMessages", $("min").value);
+    set("maxMessages", $("max").value);
+    return p;
+  }
+
+  // Of the messages that were asked; skipped ones were never sent.
+  const asked = (t) => t.messages - (t.skipped ?? 0);
+  const pct = (t) => asked(t) ? `${Math.round((t.ok / asked(t)) * 100)}%` : "–";
+  const when = (iso) => new Date(iso).toLocaleString();
+
+  function totalsText(t) {
+    return `${t.messages} messages · ${t.ok} ok · ${t.failed} failed${t.skipped ? ` · <span class="skipped">${t.skipped} skipped</span>` : ""}${t.tokenLimit ? ` · <span class="token-limit">${t.tokenLimit} token limit</span>` : ""}${t.contextRecaps ? ` · <span class="recap">${t.contextRecaps} recapped</span>` : ""} · avg ${duration(t.avgLatencyMs)} · ${t.toolCalls} tool calls · $${t.costUsd.toFixed(4)}`;
+  }
+
+  function renderSession(run, s, si) {
+    const rows = s.messages.map((m, mi) => `<tr>
+        <td>${mi + 1}</td>
+        <td class="${m.state}">${ICON[m.state]} ${label(m.state)}${recapTag(m)}</td>
+        <td>${details(`${run.runId}-${si}-${mi}`, shortQuestion(m.question), `<pre>${esc(m.question)}</pre>${answerBody(m)}`)}</td>
+        <td>${duration(m.latency_ms)}</td>
+        <td>${m.toolCalls ?? 0}</td>
+      </tr>`).join("");
+    const summary = `<span class="mono">${esc(s.sessionId || "(no session id)")}</span> <span class="stats">· ${totalsText(s.totals)}</span>`;
+    const table = `<table><thead><tr><th>#</th><th>Status</th><th>Question</th><th>Latency</th><th>Tools</th></tr></thead><tbody>${rows}</tbody></table>`;
+    return `<div class="session">${details(`${run.runId}-${si}`, summary, table)}</div>`;
+  }
+
+  function renderRuns(runs) {
+    if (!runs.length) { $("runs").innerHTML = `<span class="muted">No results match these filters.</span>`; return; }
+    const head = `<tr><th>Date</th><th>Model</th><th>Run</th><th>Sessions</th><th>Messages</th><th>OK</th><th>Token limit</th><th>Skipped</th><th>Avg latency</th><th>Tools</th><th>Cost</th></tr>`;
+    $("runs").innerHTML = runs.map((run) => {
+      const t = run.totals;
+      const row = `<table><thead>${head}</thead><tbody><tr>
+          <td>${esc(when(run.createdAt))}</td><td>${esc(run.model)}</td><td class="mono">${run.runId}</td>
+          <td>${t.sessions}</td><td>${t.messages}</td><td>${pct(t)}</td>
+          <td class="${t.tokenLimit ? "token-limit" : ""}">${t.tokenLimit}</td>
+          <td class="${t.skipped ? "skipped" : ""}">${t.skipped}</td>
+          <td>${duration(t.avgLatencyMs)}</td><td>${t.toolCalls}</td><td>$${t.costUsd.toFixed(4)}</td>
+        </tr></tbody></table>`;
+      return `<div class="session">${details(`r${run.runId}`, `<strong>${esc(run.model)}</strong> <span class="stats">· ${esc(when(run.createdAt))} · run ${run.runId}</span>`,
+        row + run.sessions.map((s, si) => renderSession(run, s, si)).join(""))}</div>`;
+    }).join("");
+  }
+
+  async function load() {
+    const mine = ++request;
+    try {
+      const { models, runs } = await api(`/api/results?${filters()}`);
+      if (mine !== request) return; // a newer filter change is already on its way
+      const selected = $("model").value;
+      $("model").replaceChildren(new Option("All models", ""), ...models.map((m) => new Option(m, m)));
+      $("model").value = models.includes(selected) ? selected : "";
+      const t = runs.reduce((a, r) => ({ runs: a.runs + 1, sessions: a.sessions + r.totals.sessions, messages: a.messages + r.totals.messages }), { runs: 0, sessions: 0, messages: 0 });
+      $("summary").textContent = `${t.runs} runs · ${t.sessions} sessions · ${t.messages} messages`;
+      renderRuns(runs);
+    } catch (err) {
+      if (mine === request) $("runs").innerHTML = `<span class="bad">${esc(err.message)}</span>`;
+    }
+  }
+
+  for (const id of ["model", "from", "to", "min", "max"]) $(id).addEventListener("change", load);
+  load();
+</script>
+</body>
+</html>

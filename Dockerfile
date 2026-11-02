@@ -8,8 +8,8 @@ COPY public ./public
 
 # /data holds the refresh token and is bind-mounted by compose.
 RUN mkdir -p /data && chown node:node /data
-ENV DATA_DIR=/data PORT=4202
+# PORT comes from .env through compose.
+ENV DATA_DIR=/data
 USER node
 
-EXPOSE 4202
 CMD ["node", "server.mjs"]

@@ -1,15 +1,33 @@
 // HTTP entry point: serves the page, the OAuth callback and a small JSON API.
-// Listens on 4202 because http://127.0.0.1:4202 is the registered redirect URI.
+// Listens on PORT, which must match the port in the registered redirect URI.
 import http from "node:http";
 import { readFile } from "node:fs/promises";
 import { parseJsonl, run, snapshot, status } from "./benchmark.mjs";
-import { ensureSchema } from "./db.mjs";
+import { ensureSchema, listResultModels, queryResults } from "./db.mjs";
 import { listModels } from "./ollama.mjs";
 import { handleCallback, isLoggedIn, loginUrl } from "./oauth.mjs";
+import { groupRuns, parseResultFilters } from "./results.mjs";
 
-const PORT = Number(process.env.PORT || 4202);
+// Hosts, URLs and ports only come from .env; stop early when one is missing.
+const REQUIRED = [
+  "PORT", "OAUTH_AUTH_URL", "OAUTH_TOKEN_URL", "OAUTH_CLIENT_ID", "OAUTH_SCOPE", "OAUTH_REDIRECT_URI",
+  "AGENT_BASE_URL", "OLLAMA_SSH_HOST", "OLLAMA_SSH_PORT", "PGHOST", "PGPORT",
+];
+const missing = REQUIRED.filter((name) => !process.env[name]?.trim());
+if (missing.length) {
+  console.error(`missing settings in .env: ${missing.join(", ")}`);
+  process.exit(1);
+}
+
+const PORT = Number(process.env.PORT);
 const MAX_BODY = 20 * 1024 * 1024;
 const PAGE = new URL("./public/index.html", import.meta.url);
+
+/** Serves one file from public/ with the given content type. */
+const file = (name, type) => async (req, res) => {
+  res.writeHead(200, { "content-type": type });
+  res.end(await readFile(new URL(`./public/${name}`, import.meta.url)));
+};
 
 function sendJson(res, code, body) {
   res.writeHead(code, { "content-type": "application/json" });
@@ -56,8 +74,18 @@ async function startRun(req, res) {
   sendJson(res, 202, { total: rows.length });
 }
 
+async function results(req, res, url) {
+  const filters = parseResultFilters(url.searchParams);
+  const [models, rows] = await Promise.all([listResultModels(), queryResults(filters)]);
+  sendJson(res, 200, { models, runs: groupRuns(rows) });
+}
+
 const routes = {
   "GET /": home,
+  "GET /results": file("results.html", "text/html; charset=utf-8"),
+  "GET /style.css": file("style.css", "text/css; charset=utf-8"),
+  "GET /common.js": file("common.js", "text/javascript; charset=utf-8"),
+  "GET /api/results": results,
   "GET /login": (req, res) => redirect(res, loginUrl()),
   "GET /api/status": (req, res) => sendJson(res, 200, { loggedIn: isLoggedIn(), run: snapshot() }),
   "GET /api/models": async (req, res) => sendJson(res, 200, await listModels()),

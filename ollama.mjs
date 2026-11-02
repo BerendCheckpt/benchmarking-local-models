@@ -46,7 +46,7 @@ export function listModels() {
       .on("error", reject)
       .connect({
         host: process.env.OLLAMA_SSH_HOST,
-        port: Number(process.env.OLLAMA_SSH_PORT || 22),
+        port: Number(process.env.OLLAMA_SSH_PORT),
         username: process.env.OLLAMA_SSH_USER,
         password: process.env.OLLAMA_SSH_PASSWORD,
         hostVerifier: hostVerifier(),

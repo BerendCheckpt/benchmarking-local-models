@@ -5,9 +5,11 @@ import * as docker from "./docker.mjs";
 import { getAccessToken } from "./oauth.mjs";
 
 const TIMEOUT_MS = 10 * 60_000;
+// Claude Code's own default is 32000; local models hit it on long answers (run 1793258147: 21 turns).
+const MAX_OUTPUT_TOKENS = "42000";
 const HEALTH_WAIT_MS = 60_000;
 
-const baseUrl = () => process.env.AGENT_BASE_URL || "http://host.docker.internal:8090";
+const baseUrl = () => process.env.AGENT_BASE_URL;
 
 /** Returns a copy of a Docker `Env` array with the given keys set. */
 export function withEnv(env, updates) {
@@ -20,25 +22,67 @@ export function withEnv(env, updates) {
 
 const envValue = (env, key) => env?.find((e) => e.startsWith(key + "="))?.slice(key.length + 1);
 
+// Where the agent's prompt and skills expect the repo mirror (plugin code, FDS
+// documents, Layout Designer manual). Mounted read-only, as in the swarm.
+export const MIRROR_PATH = "/srv/repos";
+
+/** Returns a copy of a Docker `Binds` array with `bind` replacing any bind to the same target. */
+export function withBind(binds, bind) {
+  const target = bind.split(":")[1];
+  return [...(binds ?? []).filter((b) => b.split(":")[1] !== target), bind];
+}
+
 /**
  * The agent reads CLAUDE_CHAT_MODEL once at startup (chat.mjs), so a new model
  * means a new container. Everything else is copied from the existing one.
  */
 export async function applyModel(model) {
   const name = process.env.AGENT_CONTAINER || "claude-agent-local";
-  const updates = { CLAUDE_CHAT_MODEL: model };
+  const updates = {
+    CLAUDE_CHAT_MODEL: model,
+    CLAUDE_CODE_MAX_OUTPUT_TOKENS: process.env.AGENT_MAX_OUTPUT_TOKENS?.trim() || MAX_OUTPUT_TOKENS,
+  };
   if (process.env.AGENT_OLLAMA_URL) updates.ANTHROPIC_BASE_URL = process.env.AGENT_OLLAMA_URL;
+  const mirror = process.env.AGENT_REPO_MIRROR?.trim();
+  if (mirror) updates.CNU_REPO_MIRROR = MIRROR_PATH;
 
   const current = await docker.inspect(name);
-  const unchanged = Object.entries(updates).every(([k, v]) => envValue(current.Config.Env, k) === v);
+  const binds = mirror ? withBind(current.HostConfig.Binds, `${mirror}:${MIRROR_PATH}:ro`) : current.HostConfig.Binds;
+  const unchanged = Object.entries(updates).every(([k, v]) => envValue(current.Config.Env, k) === v)
+    && JSON.stringify(binds ?? null) === JSON.stringify(current.HostConfig.Binds ?? null);
   if (unchanged && current.State.Running) return false;
 
   const { Hostname, ...config } = current.Config; // a copied Hostname would be the old container id
   await docker.remove(name);
-  const id = await docker.create(name, { ...config, Env: withEnv(config.Env, updates), HostConfig: current.HostConfig });
+  const id = await docker.create(name, {
+    ...config, Env: withEnv(config.Env, updates), HostConfig: { ...current.HostConfig, Binds: binds },
+  });
   await docker.start(id);
   await waitForHealth();
   return true;
+}
+
+// The two halves of the mirror and the token sync-mirror.mjs needs to fill each.
+const MIRROR_PARTS = [
+  { dir: "github", token: "GH_TOKEN" },  // new-flow plugins, CNU services, Layout Designer manual
+  { dir: "devops", token: "AZDO_PAT" },  // legacy CKP.RI.RetailerPlugIn.* plugins
+];
+
+/** "skipped: …" text for a message that needs the mirror, or "" when nothing is missing. */
+export function mirrorSkipReason(missingTokens) {
+  if (!missingTokens.length) return "";
+  return `needs the repo mirror, which is not synced: ${missingTokens.join(" and ")} missing`;
+}
+
+/** Tokens whose half of the mirror the agent container does not have. */
+export async function missingMirrorTokens() {
+  if (!process.env.AGENT_REPO_MIRROR?.trim()) return MIRROR_PARTS.map((p) => p.token);
+  const name = process.env.AGENT_CONTAINER || "claude-agent-local";
+  const missing = [];
+  for (const { dir, token } of MIRROR_PARTS) {
+    if (await docker.exec(name, ["test", "-d", `${MIRROR_PATH}/${dir}`]) !== 0) missing.push(token);
+  }
+  return missing;
 }
 
 async function waitForHealth() {
@@ -66,10 +110,13 @@ export function parseSse(text) {
   const of = (name) => events.filter((e) => e.event === name).map((e) => e.data);
   const result = of("result")[0], error = of("error")[0], done = of("done").pop();
   const summary = result ?? done;
+  const message = error?.error ?? error?.reason ?? "";
   return {
     ok: !!result && !error,
     reply: result?.reply ?? "",
-    error: error?.error ?? error?.reason ?? "",
+    error: message,
+    // Claude Code gives up once one response passes its output token maximum (CLAUDE_CODE_MAX_OUTPUT_TOKENS).
+    tokenLimit: /output token maximum/i.test(message),
     sessionId: summary?.sessionId ?? "",
     costUsd: summary?.costUsd ?? 0,
     turns: summary?.turns ?? 0,

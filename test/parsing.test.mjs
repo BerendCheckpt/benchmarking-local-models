@@ -1,22 +1,41 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { parseJsonl, groupBySession, withRetry, markAborted } from "../benchmark.mjs";
-import { parseSse, withEnv } from "../agent.mjs";
+import { parseJsonl, groupBySession, withRetry, markAborted, answerState, nextSession, needsMirror, skipReasons, withRecap } from "../benchmark.mjs";
+import { parseSse, withEnv, withBind, mirrorSkipReason } from "../agent.mjs";
 import { parseOllamaList, fingerprint } from "../ollama.mjs";
 import { pkcePair } from "../oauth.mjs";
 
 test("parseJsonl skips blank lines and defaults answer and session", () => {
   const rows = parseJsonl('{"session":"a","question":"q1","answer":"x"}\n\n{"question":"q2"}\r\n');
   assert.deepEqual(rows, [
-    { session: "a", question: "q1", answer: "x" },
-    { session: null, question: "q2", answer: "" },
+    { session: "a", question: "q1", answer: "x", needs: null },
+    { session: null, question: "q2", answer: "", needs: null },
   ]);
 });
 
 test("parseJsonl reports the bad line", () => {
   assert.throws(() => parseJsonl('{"question":"ok"}\nnot json'), /line 2: not valid JSON/);
   assert.throws(() => parseJsonl('{"answer":"no question"}'), /line 1: "question" missing/);
+  assert.throws(() => parseJsonl('{"question":"q","needs":"mirror"}'), /line 1: "needs" must be a list/);
+});
+
+test("needsMirror follows the needs tag, and falls back to keywords only without one", () => {
+  assert.equal(needsMirror({ question: "hi", needs: ["mirror"] }), true);
+  assert.equal(needsMirror({ question: "what does the FDS say?", needs: [] }), false);
+  assert.equal(needsMirror({ question: "what does the FDS say?", needs: null }), true);
+  assert.equal(needsMirror({ question: "which ticket centers does C&A use?", needs: null }), false);
+});
+
+test("skipReasons skips only the messages that need a missing mirror", () => {
+  const conversation = [
+    { question: "a", needs: [] }, { question: "b", needs: ["mirror"] }, { question: "c", needs: [] },
+  ];
+  const reasons = skipReasons(conversation, ["GH_TOKEN", "AZDO_PAT"]);
+  assert.deepEqual(reasons.map(Boolean), [false, true, false]);
+  assert.match(reasons[1], /GH_TOKEN and AZDO_PAT missing/);
+  assert.deepEqual(skipReasons(conversation, []), ["", "", ""]);
+  assert.equal(mirrorSkipReason(["AZDO_PAT"]), "needs the repo mirror, which is not synced: AZDO_PAT missing");
 });
 
 test("groupBySession keeps order, needs no minimum, and isolates rows without a session", () => {
@@ -43,7 +62,7 @@ test("parseSse builds a result row from the stream", () => {
     sse("result", { sessionId: "s1", costUsd: 0.5, turns: 3, reply: "Hello" }) +
     sse("done", { sessionId: "s1" });
   assert.deepEqual(parseSse(text), {
-    ok: true, reply: "Hello", error: "", sessionId: "s1", costUsd: 0.5, turns: 3,
+    ok: true, reply: "Hello", error: "", tokenLimit: false, sessionId: "s1", costUsd: 0.5, turns: 3,
     tools: ["Bash", "Read"], toolCalls: 2, proposals: 1, deltaChars: 5,
   });
 });
@@ -57,9 +76,21 @@ test("parseSse marks errors as not ok and falls back to done", () => {
   assert.equal(parseSse(sse("error", { code: "AttachmentRejected", reason: "too big" })).error, "too big");
 });
 
+test("parseSse flags the output token limit", () => {
+  const limit = "Claude Code returned an error result: API Error: Claude's response exceeded the 32000 output token maximum.";
+  assert.equal(parseSse(sse("error", { error: limit })).tokenLimit, true);
+  assert.equal(parseSse(sse("error", { error: "boom" })).tokenLimit, false);
+});
+
+test("answerState separates token-limit answers from other failures", () => {
+  assert.equal(answerState({ ok: true }), "ok");
+  assert.equal(answerState({ ok: false, tokenLimit: true }), "token-limit");
+  assert.equal(answerState({ ok: false, tokenLimit: false }), "failed");
+});
+
 test("parseSse of an empty body is an empty failed row", () => {
   assert.deepEqual(parseSse(""), {
-    ok: false, reply: "", error: "", sessionId: "", costUsd: 0, turns: 0,
+    ok: false, reply: "", error: "", tokenLimit: false, sessionId: "", costUsd: 0, turns: 0,
     tools: [], toolCalls: 0, proposals: 0, deltaChars: 0,
   });
 });
@@ -70,6 +101,25 @@ test("withEnv replaces only the given keys", () => {
     "PORT=8090", "ANTHROPIC_BASE_URL=http://a=b", "CLAUDE_CHAT_MODEL=new",
   ]);
   assert.deepEqual(withEnv(undefined, { A: "1" }), ["A=1"]);
+});
+
+test("withBind replaces a bind to the same target and keeps the others", () => {
+  const binds = ["/data:/data", "old-mirror:/srv/repos:ro"];
+  assert.deepEqual(withBind(binds, "claude-repos:/srv/repos:ro"), ["/data:/data", "claude-repos:/srv/repos:ro"]);
+  assert.deepEqual(withBind(null, "claude-repos:/srv/repos:ro"), ["claude-repos:/srv/repos:ro"]);
+});
+
+test("a token-limit answer starts a fresh agent session; other answers continue it", () => {
+  assert.equal(nextSession("token-limit", "abc"), "");
+  assert.equal(nextSession("ok", "abc"), "abc");
+  assert.equal(nextSession("failed", "abc"), "abc");
+});
+
+test("withRecap puts the earlier turns, answers shortened, before the question", () => {
+  assert.equal(withRecap([], "q1"), "q1");
+  const message = withRecap([{ question: "q1", reply: "x".repeat(900) }, { question: "q2", reply: "" }], "q3");
+  assert.match(message, /Question 1: q1\nYour answer: x{800} \[…\]\n\nQuestion 2: q2\nYour answer: \(no answer\)/);
+  assert.ok(message.endsWith("\n\nThe next question:\nq3"));
 });
 
 test("parseOllamaList returns the NAME column", () => {
