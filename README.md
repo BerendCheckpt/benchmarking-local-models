@@ -235,6 +235,30 @@ ORDER BY run_id DESC;
 - `skip_reason` is empty for asked messages. For a skipped one it says why, and
   `ok` is `false` with an empty reply.
 
+## Reports
+
+In Claude Code, opened in this repository, run:
+
+```text
+/benchmark-report [run_id] [input.jsonl]
+```
+
+Without arguments it takes the most recent run and finds the matching input file
+in `Benchmark tests local models`. It writes `reports/run-<run_id>.md`. In that
+report every answer is categorized by question type and persona and scored 0–3
+against the production reference. The scores are weighted by question type,
+persona and what the agent could access. `reports/run-1793258147.md` is an
+example.
+
+The skill is in `.claude/skills/benchmark-report/`:
+- `SKILL.md`: the steps.
+- `rubric.md`: the judging rubric.
+- `scripts/export-run.mjs`: exports the run from Postgres.
+- `scripts/aggregate.mjs`: weights and tables.
+
+Working files go to `reports/work/`, which is git-ignored. The appendix of a
+report contains customer names and order numbers from real sessions.
+
 ## Development
 
 ```bash
