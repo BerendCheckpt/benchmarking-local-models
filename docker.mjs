@@ -34,3 +34,15 @@ export const inspect = (name) => call("GET", `/containers/${enc(name)}/json`);
 export const remove = (name) => call("DELETE", `/containers/${enc(name)}?force=true`);
 export const create = async (name, config) => (await call("POST", `/containers/create?name=${enc(name)}`, config)).Id;
 export const start = (id) => call("POST", `/containers/${enc(id)}/start`);
+
+/** Runs `cmd` in a running container and resolves with its exit code. */
+export async function exec(name, cmd) {
+  const { Id } = await call("POST", `/containers/${enc(name)}/exec`, { Cmd: cmd });
+  await call("POST", `/exec/${enc(Id)}/start`, { Detach: true });
+  for (let i = 0; i < 50; i++) {
+    const state = await call("GET", `/exec/${enc(Id)}/json`);
+    if (!state.Running) return state.ExitCode;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  throw new Error(`docker exec ${cmd.join(" ")} did not finish`);
+}

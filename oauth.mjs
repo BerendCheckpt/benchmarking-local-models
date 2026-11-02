@@ -13,7 +13,7 @@ const cfg = () => ({
   tokenUrl: process.env.OAUTH_TOKEN_URL,
   clientId: process.env.OAUTH_CLIENT_ID,
   scope: process.env.OAUTH_SCOPE,
-  redirectUri: process.env.OAUTH_REDIRECT_URI || "http://127.0.0.1:4202",
+  redirectUri: process.env.OAUTH_REDIRECT_URI,
 });
 
 let tokens = load();

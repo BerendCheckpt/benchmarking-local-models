@@ -6,7 +6,7 @@ services:
     build: .
     env_file: .env
     ports:
-      - "127.0.0.1:4202:4202" # page + OAuth redirect (http://127.0.0.1:4202)
+      - "127.0.0.1:${PORT:?set PORT in .env}:${PORT}" # page + OAuth redirect
     extra_hosts:
       - "host.docker.internal:host-gateway" # agent's published port
     # The Docker socket is root:root 0660; group 0 lets the node user open it.
@@ -23,4 +23,4 @@ services:
 networks:
   pg:
     external: true
-    name: ${PG_NETWORK:-local-model-benchmark_default}
+    name: ${PG_NETWORK:?set PG_NETWORK in .env}
