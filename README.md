@@ -104,12 +104,40 @@ recreates the agent with the mirror mounted. Run the sync again to refresh it;
 
 **The mirror and its tokens are optional.** At the start of each run the app
 checks which half of the mirror the agent has: `github/` (filled with
-`GH_TOKEN`) and `devops/` (filled with `AZDO_PAT`). If either is missing, or
+`GH_TOKEN`) and `devops/` (filled with `AZDO_PAT`). If `github/` is missing, or
 `AGENT_REPO_MIRROR` is empty, every message that needs the mirror is **skipped**
 with the reason, for example *needs the repo mirror, which is not synced:
 GH_TOKEN and AZDO_PAT missing*. The rest of the run goes ahead, and a
 conversation carries on past its skipped messages. Once you've synced the
 mirror, run the same file again to answer the skipped questions.
+
+`github/` holds the new-flow plugins, the CNU services and the Layout Designer
+manual, so a mirror without `devops/` is still used: those messages are asked,
+and the page notes that the agent can't read the legacy
+`CKP.RI.RetailerPlugIn.*` code.
+
+**A local mirror of clones** works too. Shallow-clone the repos you need into
+`<folder>/github/checkpt-als/<repo>` (and `<folder>/devops/checknet-onboarding/<repo>`
+for legacy plugins), then set `AGENT_REPO_MIRROR` to the folder in Docker
+Desktop's Linux form, for example
+`/run/desktop/mnt/host/c/Users/<you>/Documents/Repositories/cnu-repo-mirror`.
+Not `C:\…`: the colon after the drive letter breaks the mount. On Windows, clone
+with `-c core.longpaths=true`, or cnu-backoffice-frontend and cnu-labelizer-engine
+only check out partly.
+
+### Agent image
+
+The app recreates the agent from `cnu-claude-agent-benchmark:latest`. Build it
+from the cnu-claude-agent checkout next to this repo, with the `.env` values for
+`AGENT_ENV`, `AGENT_OLLAMA_URL` and `AGENT_MAX_OUTPUT_TOKENS` as defaults
+([agent/Dockerfile](agent/Dockerfile)). `AGENT_WRAP_UP_SECONDS` (default 120)
+becomes the agent's `CHAT_WRAP_UP_SECONDS`: that long before the deadline, plus
+10 s, the agent refuses further tool calls and the model writes its answer.
+With the 600 s budget it stops looking at 470 s.
+
+```bash
+docker compose --profile agent build agent
+```
 
 ### Configuration (`.env`)
 
