@@ -68,9 +68,14 @@ const MIRROR_PARTS = [
   { dir: "devops", token: "AZDO_PAT" },  // legacy CKP.RI.RetailerPlugIn.* plugins
 ];
 
-/** "skipped: …" text for a message that needs the mirror, or "" when nothing is missing. */
+/**
+ * "skipped: …" text for a message that needs the mirror, or "" to ask it. Only a
+ * missing github/ half skips: it holds the new-flow plugins, the services and the
+ * Layout Designer manual. Without devops/ the message is still asked, and the
+ * agent can't read the legacy plugin code.
+ */
 export function mirrorSkipReason(missingTokens) {
-  if (!missingTokens.length) return "";
+  if (!missingTokens.includes("GH_TOKEN")) return "";
   return `needs the repo mirror, which is not synced: ${missingTokens.join(" and ")} missing`;
 }
 
