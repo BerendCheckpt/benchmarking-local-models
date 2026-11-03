@@ -20,6 +20,26 @@ services:
     networks:
       - pg
 
+  # Builds the agent image the app recreates claude-agent-local from. Build-only
+  # (profile "agent"), so `docker compose up` never starts them:
+  #   docker compose --profile agent build agent
+  agent-upstream:
+    profiles: ["agent"]
+    image: cnu-claude-agent:local
+    build: ../cnu-claude-agent
+  agent:
+    profiles: ["agent"]
+    image: cnu-claude-agent-benchmark:latest
+    build:
+      context: ./agent
+      additional_contexts:
+        upstream: service:agent-upstream
+      args:
+        AGENT_ENV: ${AGENT_ENV:-qa}
+        AGENT_OLLAMA_URL: ${AGENT_OLLAMA_URL:-}
+        AGENT_MAX_OUTPUT_TOKENS: ${AGENT_MAX_OUTPUT_TOKENS:-42000}
+        AGENT_WRAP_UP_SECONDS: ${AGENT_WRAP_UP_SECONDS:-120}
+
 networks:
   pg:
     external: true
