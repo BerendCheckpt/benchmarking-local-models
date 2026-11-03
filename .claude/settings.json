@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/test-after-edit.mjs\"",
+            "timeout": 120,
+            "statusMessage": "Running tests"
+          }
+        ]
+      }
+    ]
+  }
+}
