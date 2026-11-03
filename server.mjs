@@ -5,7 +5,7 @@ import { readFile } from "node:fs/promises";
 import { parseJsonl, run, snapshot, status } from "./benchmark.mjs";
 import { ensureSchema, listResultModels, queryResults } from "./db.mjs";
 import { listModels } from "./ollama.mjs";
-import { handleCallback, isLoggedIn, loginUrl } from "./oauth.mjs";
+import { checkLogin, handleCallback, isLoggedIn, loginUrl } from "./oauth.mjs";
 import { groupRuns, parseResultFilters } from "./results.mjs";
 
 // Hosts, URLs and ports only come from .env; stop early when one is missing.
@@ -51,13 +51,18 @@ async function readJson(req) {
 }
 
 async function home(req, res, url) {
+  // The login runs in a pop-up; /login-done tells the page and closes it.
   const code = url.searchParams.get("code");
   if (code) {
-    await handleCallback(code, url.searchParams.get("state"));
-    return redirect(res, "/");
+    try {
+      await handleCallback(code, url.searchParams.get("state"));
+    } catch (err) {
+      return redirect(res, `/login-done?error=${encodeURIComponent(err.message)}`);
+    }
+    return redirect(res, "/login-done");
   }
   const oauthError = url.searchParams.get("error");
-  if (oauthError) return sendJson(res, 400, { error: `login failed: ${oauthError}` });
+  if (oauthError) return redirect(res, `/login-done?error=${encodeURIComponent(oauthError)}`);
   res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
   res.end(await readFile(PAGE));
 }
@@ -87,7 +92,8 @@ const routes = {
   "GET /common.js": file("common.js", "text/javascript; charset=utf-8"),
   "GET /api/results": results,
   "GET /login": (req, res) => redirect(res, loginUrl()),
-  "GET /api/status": (req, res) => sendJson(res, 200, { loggedIn: isLoggedIn(), run: snapshot() }),
+  "GET /login-done": file("login-done.html", "text/html; charset=utf-8"),
+  "GET /api/status": async (req, res) => sendJson(res, 200, { loggedIn: await checkLogin(), run: snapshot() }),
   "GET /api/models": async (req, res) => sendJson(res, 200, await listModels()),
   "POST /api/run": startRun,
 };

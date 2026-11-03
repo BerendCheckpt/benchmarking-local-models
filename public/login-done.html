@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Login</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main>
+  <p id="text">Logged in.</p>
+  <p><a href="/">Back to the benchmark</a></p>
+</main>
+<script>
+  // End of the OAuth callback. In the login pop-up: tell the page that opened it
+  // and close. Opened on its own: show a failed login, or go back to the page.
+  const error = new URLSearchParams(location.search).get("error");
+  if (error) {
+    document.getElementById("text").textContent = `Login failed: ${error}`;
+    document.getElementById("text").className = "bad";
+  }
+  if (window.opener) {
+    window.opener.postMessage({ type: "login-done", error }, location.origin);
+    if (!error) window.close();
+  } else if (!error) {
+    location.replace("/");
+  }
+</script>
+</body>
+</html>
