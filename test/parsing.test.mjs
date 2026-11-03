@@ -35,7 +35,13 @@ test("skipReasons skips only the messages that need a missing mirror", () => {
   assert.deepEqual(reasons.map(Boolean), [false, true, false]);
   assert.match(reasons[1], /GH_TOKEN and AZDO_PAT missing/);
   assert.deepEqual(skipReasons(conversation, []), ["", "", ""]);
-  assert.equal(mirrorSkipReason(["AZDO_PAT"]), "needs the repo mirror, which is not synced: AZDO_PAT missing");
+  assert.equal(mirrorSkipReason(["GH_TOKEN"]), "needs the repo mirror, which is not synced: GH_TOKEN missing");
+});
+
+test("a missing legacy half alone skips nothing", () => {
+  const conversation = [{ question: "a", needs: ["mirror"] }];
+  assert.deepEqual(skipReasons(conversation, ["AZDO_PAT"]), [""]);
+  assert.equal(mirrorSkipReason(["AZDO_PAT"]), "");
 });
 
 test("groupBySession keeps order, needs no minimum, and isolates rows without a session", () => {

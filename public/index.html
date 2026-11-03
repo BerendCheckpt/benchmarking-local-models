@@ -176,9 +176,12 @@
       $("bar").max = run.total || 1;
       $("bar").value = run.done;
       $("counts").textContent = `${run.done} / ${run.total} answered, ${run.failures} failed, ${run.tokenLimits ?? 0} token limit` + (run.skipped ? `, ${run.skipped} skipped` : "") + (run.unsaved ? `, ${run.unsaved} not saved` : "");
-      $("mirror-note").textContent = run.mirrorMissing?.length
-        ? `Repo mirror not synced (${run.mirrorMissing.join(" and ")} missing): questions that need plugin code, FDS or the Layout Designer manual are skipped; the rest still runs.`
-        : "";
+      const missing = run.mirrorMissing ?? [];
+      $("mirror-note").textContent = missing.includes("GH_TOKEN")
+        ? `Repo mirror not synced (${missing.join(" and ")} missing): questions that need plugin code, FDS or the Layout Designer manual are skipped; the rest still runs.`
+        : missing.length
+          ? "Legacy half of the repo mirror not synced (AZDO_PAT missing): questions are still asked, but the agent can't read the legacy CKP.RI.RetailerPlugIn.* code."
+          : "";
       $("last-error").textContent = run.lastError;
       current = run.current;
       currentSeenAt = Date.now();
