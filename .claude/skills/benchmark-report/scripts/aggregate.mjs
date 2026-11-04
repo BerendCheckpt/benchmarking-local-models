@@ -31,8 +31,10 @@ const PER = { support: 1.25, operations: 1.25, "requirement-analyst": 1.15,
 const ANS = { full: 1, partial: 0.75, no: 0.5 };
 const weight = (r) => (CAT[r.category] ?? 1) * (PER[r.persona] ?? 1) * (ANS[r.answerable] ?? 1);
 
-const outOfTime = (r) => r.ok && /ran out of time/i.test(r.reply);
-const outcome = (r) => (!r.ok ? (r.tokenLimit ? "token limit" : "transport error") : outOfTime(r) ? "out of time" : "answered");
+// The agent's own deadline notes, old and new wording; a model that mentions time in its answer is still answered.
+const outOfTime = (r) => r.ok && /I ran out of time before (finishing|I could finish checking|I had anything to tell you)/i.test(r.reply);
+const outcome = (r) => (!r.ok ? (r.tokenLimit ? "token limit" : /not logged in/i.test(r.error) ? "not logged in" : "transport error")
+  : outOfTime(r) ? "out of time" : "answered");
 const answered = (r) => outcome(r) === "answered";
 
 const pct = (a, b) => (b ? `${Math.round((100 * a) / b)}%` : "–");
@@ -159,7 +161,7 @@ for (const r of [...all].sort((a, b) => sessionOrder.get(sessionKey(a)) - sessio
   bySession.get(sessionKey(r)).push(r);
 }
 const cell = (s) => String(s ?? "").replace(/\s+/g, " ").replace(/\|/g, "\\|");
-const code = { answered: "ans", "out of time": "time", "token limit": "tok", "transport error": "net" };
+const code = { answered: "ans", "out of time": "time", "token limit": "tok", "transport error": "net", "not logged in": "login" };
 const short = (s) => String(s).slice(0, 8);
 const heading = (list) => `${multi ? `${list[0].runId} · ` : ""}${short(list[0].session)} · ${list.length} ${list.length === 1 ? "turn" : "turns"}`;
 // GitHub-style anchor of a heading: lower case, punctuation dropped, spaces to hyphens.
@@ -179,7 +181,7 @@ const appendix = [
     const n = (o) => asked.filter((r) => outcome(r) === o).length;
     const dates = list.map((r) => r.askedAt?.slice(0, 10) ?? "").sort();
     return `| ${multi ? `${list[0].runId} | ${list[0].model} | ` : ""}[${short(list[0].session)}](#${slug(heading(list))}) | ${list.length} | ${dates[0] === dates.at(-1) ? dates[0] : `${dates[0]} to ${dates.at(-1)}`} | `
-      + `${mean(asked)} | ${n("answered")} | ${n("out of time")} | ${n("token limit")} | ${n("transport error")} | ${list.length - asked.length} |`;
+      + `${mean(asked)} | ${n("answered")} | ${n("out of time")} | ${n("token limit")} | ${n("transport error") + n("not logged in")} | ${list.length - asked.length} |`;
   }),
   "",
   "### Messages by session",
