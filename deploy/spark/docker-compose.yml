@@ -1,0 +1,105 @@
+# Portainer stack for the spark server: the benchmark app, its own Postgres and
+# its own benchmark-only agent. The production cnu-claude-agent, Ollama and the
+# models on the same server are not touched: the app recreates only the
+# container labelled benchmark.role=agent (agent/Dockerfile).
+#
+# Portainer: Stacks > Add stack > paste this file (or point it at this repo,
+# path deploy/spark/docker-compose.yml, at the release tag), then add the
+# environment variables listed in the README ("Deploy on spark"). Portainer
+# writes them to stack.env, which the app service reads.
+#
+# The page and Postgres listen on spark's 127.0.0.1 only: the app can recreate
+# containers through the Docker socket. Reach them through SSH tunnels.
+name: benchmark
+
+services:
+  app:
+    image: ghcr.io/berendcheckpt/benchmarking-local-models:${BENCHMARK_VERSION:?set BENCHMARK_VERSION, e.g. 1.0.0}
+    restart: unless-stopped
+    env_file: stack.env
+    environment:
+      # Fixed by this stack; everything else comes from stack.env.
+      PGHOST: db
+      PGPORT: "5432"
+      AGENT_BASE_URL: http://claude-agent-benchmark:8090
+      AGENT_CONTAINER: claude-agent-benchmark
+      AGENT_REPO_MIRROR: claude-repos-benchmark
+      QA_SESSIONS_SSH_KEY_FILE: /run/secrets/qa_sessions_key
+    ports:
+      - "127.0.0.1:${PORT:-4202}:${PORT:-4202}" # page + OAuth redirect, through an SSH tunnel
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # The Docker socket is root:root 0660; group 0 lets the node user open it.
+    group_add:
+      - "0"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - benchmark-data:/data
+      # Private key for the QA sessions host, read-only. Without a path the
+      # mount is /dev/null and messages that had a file are skipped.
+      - ${QA_SESSIONS_SSH_KEY_PATH:-/dev/null}:/run/secrets/qa_sessions_key:ro
+    depends_on:
+      - db
+      - agent
+    networks:
+      - benchmark
+
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${PGDATABASE:-benchmark}
+      POSTGRES_USER: ${PGUSER:-benchmark}
+      POSTGRES_PASSWORD: ${PGPASSWORD:?set PGPASSWORD}
+    ports:
+      - "127.0.0.1:${PG_TUNNEL_PORT:-5433}:5432" # for /benchmark-report --server, through an SSH tunnel
+    volumes:
+      - benchmark-pg:/var/lib/postgresql/data
+    networks:
+      - benchmark
+
+  # The benchmark-only agent. The app recreates it (same name, network, volumes
+  # and labels) whenever a run uses a different model.
+  agent:
+    image: ghcr.io/berendcheckpt/benchmarking-local-models-agent:${BENCHMARK_VERSION:?set BENCHMARK_VERSION}
+    container_name: claude-agent-benchmark
+    restart: unless-stopped
+    labels:
+      benchmark.role: agent
+    environment:
+      ANTHROPIC_BASE_URL: ${AGENT_OLLAMA_URL:?set AGENT_OLLAMA_URL, the Ollama address as seen from a container}
+      # Claude Code wants a key even though Ollama ignores it.
+      ANTHROPIC_API_KEY: ${AGENT_ANTHROPIC_API_KEY:-ollama}
+      ANTHROPIC_AUTH_TOKEN: ${AGENT_ANTHROPIC_API_KEY:-ollama}
+      CLAUDE_CHAT_MODEL: ${AGENT_MODEL:?set AGENT_MODEL, e.g. Qwen3.8:27B}
+      CLAUDE_MODEL: ${AGENT_MODEL}
+      CNU_DEFAULT_ENV: ${AGENT_ENV:-qa}
+      CLAUDE_CODE_MAX_OUTPUT_TOKENS: ${AGENT_MAX_OUTPUT_TOKENS:-42000}
+      # Labelizer render service, for render-verify in generation calls.
+      RABBITMQ_HOST: ${AGENT_RABBITMQ_HOST:-}
+      RABBITMQ_USER: ${AGENT_RABBITMQ_USER:-}
+      RABBITMQ_PASS: ${AGENT_RABBITMQ_PASS:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # The repo mirror (Docker volume claude-repos-benchmark, filled once with the
+    # sync in the README) is NOT mounted here: the app binds it read-only at
+    # /srv/repos when it recreates the agent at the start of a run
+    # (AGENT_REPO_MIRROR). Mounting it here as well would give the recreated
+    # container /srv/repos twice, and Docker refuses that.
+    volumes:
+      - claude-agent-benchmark-sessions:/home/node/.claude/projects
+    networks:
+      - benchmark
+
+networks:
+  benchmark:
+    name: benchmark
+
+# Fixed names, so they don't change with the stack name.
+volumes:
+  benchmark-data:
+    name: benchmark-data
+  benchmark-pg:
+    name: benchmark-pg
+  claude-agent-benchmark-sessions:
+    name: claude-agent-benchmark-sessions

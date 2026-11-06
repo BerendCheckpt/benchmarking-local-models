@@ -32,6 +32,19 @@ export function withBind(binds, bind) {
   return [...(binds ?? []).filter((b) => b.split(":")[1] !== target), bind];
 }
 
+// The label agent/Dockerfile sets. On a server that also runs the production
+// agent, the app may recreate only a container that carries it.
+export const AGENT_LABEL = ["benchmark.role", "agent"];
+
+/** Throws unless the inspected container is a benchmark agent (has AGENT_LABEL). */
+export function assertBenchmarkAgent(container, name) {
+  const [key, value] = AGENT_LABEL;
+  if (container?.Config?.Labels?.[key] !== value) {
+    throw new Error(`refusing to recreate ${name}: it has no ${key}=${value} label, so it is not a benchmark agent`
+      + " (build the agent image from agent/Dockerfile and recreate it once)");
+  }
+}
+
 /**
  * The agent reads CLAUDE_CHAT_MODEL once at startup (chat.mjs), so a new model
  * means a new container. Everything else is copied from the existing one.
@@ -47,6 +60,7 @@ export async function applyModel(model) {
   if (mirror) updates.CNU_REPO_MIRROR = MIRROR_PATH;
 
   const current = await docker.inspect(name);
+  assertBenchmarkAgent(current, name);
   const binds = mirror ? withBind(current.HostConfig.Binds, `${mirror}:${MIRROR_PATH}:ro`) : current.HostConfig.Binds;
   const unchanged = Object.entries(updates).every(([k, v]) => envValue(current.Config.Env, k) === v)
     && JSON.stringify(binds ?? null) === JSON.stringify(current.HostConfig.Binds ?? null);

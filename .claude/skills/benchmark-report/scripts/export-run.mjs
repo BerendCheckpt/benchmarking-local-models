@@ -11,26 +11,27 @@
 // ends inclusive): its last message was saved in it. A run that is still going
 // is left out. Each run's input file is found in INPUT_DIR unless --input is
 // given (single run only). Postgres is reached through `docker exec`
-// (PG_CONTAINER, PG_USER, PG_DB; defaults postgres / n8n / n8n).
-import { execFileSync } from "node:child_process";
-import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+// (PG_CONTAINER, PG_USER, PG_DB; defaults postgres / n8n / n8n), or with
+// --server through a pg connection to the spark stack's Postgres, normally an
+// SSH tunnel (RESULTS_PGHOST, RESULTS_PGPORT, RESULTS_PGDATABASE, RESULTS_PGUSER,
+// RESULTS_PGPASSWORD, from the environment or the repo's .env).
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { matchByLine } from "./match.mjs";
+import { ResultsRepository } from "./results-source.mjs";
 
 const INPUT_DIR = process.env.INPUT_DIR || "C:\\Users\\hulshofb\\Documents\\Benchmark tests local models";
 const BENCH_URL = process.env.BENCH_URL || "http://127.0.0.1:4202";
 
-const flags = new Set(["today"]);
+const flags = new Set(["today", "server"]);
 const args = Object.fromEntries(process.argv.slice(2).reduce((pairs, a, i, all) => {
   if (a.startsWith("--")) pairs.push([a.slice(2), flags.has(a.slice(2)) ? true : all[i + 1]]);
   return pairs;
 }, []));
 
-const container = process.env.PG_CONTAINER || "postgres";
-const psql = (sql) => execFileSync("docker", [
-  "exec", "-i", container, "psql", "-U", process.env.PG_USER || "n8n", "-d", process.env.PG_DB || "n8n",
-  "-v", "ON_ERROR_STOP=1", "-tA", "-c", sql,
-], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 }).trim();
+if (args.server && existsSync(".env")) process.loadEnvFile(".env");
+const results = ResultsRepository.from({ server: !!args.server });
+const psql = (sql) => results.text(sql);
 
 // A local date (YYYY-MM-DD) as the instant its day starts, `days` later.
 function localDay(text, days = 0) {
@@ -50,7 +51,7 @@ async function runningRunId() {
     console.error(`could not read ${BENCH_URL}/api/status; assuming no run is going`);
     return null;
   }
-  return Number(psql("SELECT max(run_id) FROM benchmark_results.rsults"));
+  return Number(await psql("SELECT max(run_id) FROM benchmark_results.rsults"));
 }
 
 let window = null;
@@ -64,14 +65,14 @@ if (args.today || args.from || args.to) {
   if (args.input || args.run) throw new Error("--input and --run only go with a single run, not with a date window");
   window = { from, to };
   const running = await runningRunId();
-  runIds = psql(`
+  runIds = (await psql(`
     SELECT run_id FROM benchmark_results.rsults GROUP BY run_id
     HAVING max(created_at) >= '${start.toISOString()}' AND max(created_at) < '${end.toISOString()}'
-    ORDER BY max(created_at), run_id`).split("\n").filter(Boolean).map(Number).filter((id) => id !== running);
+    ORDER BY max(created_at), run_id`)).split("\n").filter(Boolean).map(Number).filter((id) => id !== running);
   if (running) console.error(`run ${running} is still going and is left out`);
   if (!runIds.length) throw new Error(`no run ended between ${from} and ${to}`);
 } else {
-  const id = args.run ? Number(args.run) : Number(psql("SELECT max(run_id) FROM benchmark_results.rsults"));
+  const id = args.run ? Number(args.run) : Number(await psql("SELECT max(run_id) FROM benchmark_results.rsults"));
   if (!Number.isInteger(id)) throw new Error(`not a run id: ${args.run}`);
   runIds = [id];
 }
@@ -132,7 +133,7 @@ const items = [];
 for (const runId of runIds) {
   // Insertion order (created_at, then ctid for backfilled rows that share a
   // timestamp) is the order the run asked the messages in.
-  const rows = JSON.parse(psql(`
+  const rows = JSON.parse(await psql(`
     SELECT coalesce(json_agg(t ORDER BY t.n), '[]') FROM (
       SELECT row_number() OVER (ORDER BY created_at, ctid)::int AS n, created_at AS ts, model, "sessionId", prompt, expected_answer, reply, ok,
              token_limit, skip_reason, context_recap, error, latency_ms, tools, "toolCalls", turns,
@@ -202,3 +203,4 @@ for (let c = 0; c < n; c++) {
 }
 console.log(JSON.stringify({ name, runs: runs.map(({ runId, model, input, partial, messages }) => ({ runId, model, input, partial, messages })),
   messages: items.length, skipped: items.length - toJudge.length, chunks: n, out }));
+await results.end();
