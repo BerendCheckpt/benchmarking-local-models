@@ -1,6 +1,6 @@
 {
   "name": "benchmarking-local-models",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "description": "Benchmark local Ollama models through the cnu-claude-agent /chat endpoint.",

@@ -58,7 +58,23 @@ from and to are the same day), git-ignored:
 Item `id`s number the messages across all runs; `line` is the line in that run's input
 file, and `runId` and `model` say where each one came from.
 
-Postgres is reached with `docker exec postgres psql -U n8n -d n8n`.
+Postgres is reached with `docker exec postgres psql -U n8n -d n8n`: the app on this PC.
+
+**A run on the spark server** (the Portainer stack in `deploy/spark/`) is in that
+stack's own Postgres. Open a tunnel first, then add `--server` to the export:
+
+```bash
+ssh -N -L 5433:127.0.0.1:5433 <spark>
+```
+
+```bash
+node .claude/skills/benchmark-report/scripts/export-run.mjs --server --run <run_id>
+```
+
+`--server` reads `RESULTS_PGHOST`, `RESULTS_PGPORT`, `RESULTS_PGDATABASE`,
+`RESULTS_PGUSER` and `RESULTS_PGPASSWORD` from `.env` itself; don't read `.env`.
+The app's status for a running-run check comes from `http://127.0.0.1:4202`,
+which needs the page tunnel too (README, "Deploy on spark").
 
 ## 2b. Label history (always, before judging)
 
@@ -109,7 +125,8 @@ work this out per run: mounts and tokens can differ between them. Build the acce
 table (see the report's "What the agent can access") from evidence:
 - `docker inspect claude-agent-local`: mounts (is `/srv/repos` there?),
   `CLAUDE_CODE_MAX_OUTPUT_TOKENS`, `CLAUDE_CHAT_MODEL`. This is the state **now**. If the
-  agent was recreated since the run, say so.
+  agent was recreated since the run, say so. For a run on spark, the agent is
+  `claude-agent-benchmark` there: `ssh <spark> docker inspect claude-agent-benchmark`.
 - `skip_reason` in the items: says which half of the repo mirror was missing at run time.
   Skipped messages are not judged; list them separately in the report.
 - `contextRecap` items: asked in a fresh session with the earlier turns recapped.

@@ -371,6 +371,95 @@ The skill is in `.claude/skills/benchmark-report/`:
 Working files go to `reports/work/`, which is git-ignored. The appendix of a
 report contains customer names and order numbers from real sessions.
 
+## Releases
+
+Every pull request and push to `main` runs the tests (`.github/workflows/ci.yml`).
+Publishing a GitHub release with a `vX.Y.Z` tag runs them again and, only when
+they pass, builds and pushes two images (`.github/workflows/release.yml`):
+
+| Image | What |
+|---|---|
+| `ghcr.io/berendcheckpt/benchmarking-local-models:X.Y.Z` | The app |
+| `ghcr.io/berendcheckpt/benchmarking-local-models-agent:X.Y.Z` | The benchmark-only agent: the production cnu-claude-agent image pinned in [agent/Dockerfile](agent/Dockerfile) (`AGENT_BASE`), plus poppler, the `benchmark.role=agent` label and the benchmark defaults |
+
+```bash
+gh release create v1.0.0 --target main --generate-notes
+```
+
+The release workflow pulls the production agent image from the `checkpt-als`
+packages, so the repository needs the secret `CHECKPT_GHCR_TOKEN`: a token with
+`read:packages` that can see them. To benchmark a newer agent, bump the tag in
+`ARG AGENT_BASE=` and release again.
+
+## Deploy on spark (Portainer)
+
+The spark server runs Ollama, the models and the production cnu-claude-agent.
+The benchmark runs there as its own stack, [deploy/spark/docker-compose.yml](deploy/spark/docker-compose.yml):
+
+| Service | Container | What |
+|---|---|---|
+| `app` | `benchmark-app-1` | The app. Page on spark's `127.0.0.1:4202` only |
+| `db` | `benchmark-db-1` | Its own Postgres; the app creates the schema. On `127.0.0.1:5433` for reports |
+| `agent` | `claude-agent-benchmark` | The benchmark-only agent. The app recreates it on a model switch |
+
+The app recreates only a container with the label `benchmark.role=agent`, so it
+can never touch the production agent on the same server.
+
+**1. Registry.** In Portainer, add a registry for `ghcr.io` with your GitHub user
+and a token with `read:packages` (the images are private).
+
+**2. Stack.** Stacks → Add stack → paste `deploy/spark/docker-compose.yml` (or
+point Portainer at this repository, compose path `deploy/spark/docker-compose.yml`,
+reference `refs/tags/vX.Y.Z`). Add these environment variables; Portainer writes
+them to `stack.env`, which the app reads:
+
+| Variable | Value |
+|---|---|
+| `BENCHMARK_VERSION` | The release, e.g. `1.0.0` |
+| `PORT` | `4202` |
+| `OAUTH_AUTH_URL` `OAUTH_TOKEN_URL` `OAUTH_CLIENT_ID` `OAUTH_SCOPE` | As in your `.env` |
+| `OAUTH_REDIRECT_URI` | The same as in your `.env` (on `127.0.0.1:4202`): the tunnel keeps it valid |
+| `AGENT_OLLAMA_URL` | Ollama as seen from a container, e.g. `http://host.docker.internal:11434` or spark's LAN address |
+| `AGENT_MODEL` | The model the agent starts with, e.g. `Qwen3.8:27B` |
+| `AGENT_ENV` | `qa` |
+| `AGENT_RABBITMQ_HOST` `AGENT_RABBITMQ_USER` `AGENT_RABBITMQ_PASS` | The Labelizer render service, for render checks in generation calls. Empty: the agent's QA fallback |
+| `PGDATABASE` `PGUSER` `PGPASSWORD` | The stack's own Postgres; pick a password |
+| `OLLAMA_SSH_HOST` `OLLAMA_SSH_PORT` `OLLAMA_SSH_USER` `OLLAMA_SSH_PASSWORD` | SSH to spark itself, for `ollama list` (`host.docker.internal` works) |
+| `QA_SESSIONS_SSH_HOST` `QA_SESSIONS_SSH_PORT` `QA_SESSIONS_SSH_USER` | The QA sessions host |
+| `QA_SESSIONS_SSH_KEY_PATH` | The private key's path **on spark**, e.g. `/opt/benchmark/qa_sessions_key` (mode 0600) |
+| `GENERATE_TIMEOUT_S` | Optional; default 6 h |
+
+**3. Repo mirror, once.** On spark, fill the volume the app binds into the agent
+(`GH_TOKEN` and `AZDO_PAT` in your shell, not in the stack):
+
+```bash
+docker run --rm --user root -v claude-repos-benchmark:/srv/repos --entrypoint chown ghcr.io/berendcheckpt/benchmarking-local-models-agent:1.0.0 node:node /srv/repos
+```
+
+```bash
+docker run --rm -e GH_TOKEN -e AZDO_PAT -e CNU_REPO_MIRROR=/srv/repos -v claude-repos-benchmark:/srv/repos --entrypoint node ghcr.io/berendcheckpt/benchmarking-local-models-agent:1.0.0 /app/sync-mirror.mjs --once
+```
+
+The first run then recreates the agent with the mirror mounted read-only.
+
+**4. Open the page** through an SSH tunnel from your PC, then browse to
+`http://127.0.0.1:4202` and log in as usual:
+
+```bash
+ssh -N -L 4202:127.0.0.1:4202 <spark>
+```
+
+**5. Reports** read the stack's Postgres through a second tunnel and
+`export-run.mjs --server` (see `RESULTS_PG*` in `.env.example`):
+
+```bash
+ssh -N -L 5433:127.0.0.1:5433 <spark>
+```
+
+**Upgrading:** publish a new release, set `BENCHMARK_VERSION` to it in the
+stack and update the stack (pull the images). Data, the login and the mirror are
+in named volumes and stay.
+
 ## Development
 
 ```bash

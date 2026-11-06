@@ -1,7 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { generate, generationIds, generationReply, replay } from "../benchmark.mjs";
-import { describeLimit, generateTimeoutMs } from "../agent.mjs";
+import { assertBenchmarkAgent, describeLimit, generateTimeoutMs } from "../agent.mjs";
+
+test("the app recreates only a container labelled as the benchmark agent", () => {
+  assert.doesNotThrow(() => assertBenchmarkAgent({ Config: { Labels: { "benchmark.role": "agent" } } }, "claude-agent-benchmark"));
+  // The production agent on the same server has no such label.
+  assert.throws(() => assertBenchmarkAgent({ Config: { Labels: {} } }, "claude-agent"), /refusing to recreate claude-agent/);
+  assert.throws(() => assertBenchmarkAgent({ Config: {} }, "x"), /benchmark\.role=agent/);
+  assert.throws(() => assertBenchmarkAgent({ Config: { Labels: { "benchmark.role": "other" } } }, "x"));
+});
 
 test("the app waits up to 6 hours for /from-pdf unless GENERATE_TIMEOUT_S says otherwise", () => {
   const saved = process.env.GENERATE_TIMEOUT_S;

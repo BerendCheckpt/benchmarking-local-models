@@ -40,6 +40,9 @@ services:
       additional_contexts:
         upstream: service:agent-upstream
       args:
+        # The local cnu-claude-agent build (the named context above) instead of
+        # the pinned production image the release uses.
+        AGENT_BASE: upstream
         AGENT_ENV: ${AGENT_ENV:-qa}
         AGENT_OLLAMA_URL: ${AGENT_OLLAMA_URL:-}
         AGENT_MAX_OUTPUT_TOKENS: ${AGENT_MAX_OUTPUT_TOKENS:-42000}

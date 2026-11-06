@@ -8,6 +8,24 @@ const pool = new pg.Pool();
 pool.on("error", (err) => console.error(`[db] idle connection lost: ${err.message}`));
 
 export async function ensureSchema() {
+  // A fresh database (the spark stack's own Postgres) has neither; the n8n one
+  // already has both, made with these original columns.
+  await pool.query(`CREATE SCHEMA IF NOT EXISTS benchmark_results`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS ${TABLE} (
+    run_id integer NOT NULL,
+    prompt text NOT NULL,
+    expected_answer text NOT NULL,
+    latency_ms integer NOT NULL,
+    ok boolean NOT NULL,
+    reply text NOT NULL,
+    error text,
+    "sessionId" text NOT NULL,
+    "costUsd" real NOT NULL DEFAULT 0,
+    turns integer NOT NULL DEFAULT 0,
+    tools text[],
+    "toolCalls" integer NOT NULL DEFAULT 0,
+    proposals integer NOT NULL DEFAULT 0,
+    "deltaChars" integer NOT NULL DEFAULT 0)`);
   await pool.query(`ALTER TABLE ${TABLE}
     ADD COLUMN IF NOT EXISTS model text,
     ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now(),
