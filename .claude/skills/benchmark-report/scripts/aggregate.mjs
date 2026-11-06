@@ -4,6 +4,7 @@
 //   node aggregate.mjs <work dir>
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { mean, outcome, outOfTime, pct, weight, weighted } from "./outcome.mjs";
 
 const dir = process.argv[2];
 if (!dir) throw new Error("usage: node aggregate.mjs <work dir>");
@@ -22,24 +23,8 @@ if (missing.length) {
 }
 writeFileSync(join(dir, "rows.json"), JSON.stringify(all, null, 1));
 
-// Weight = how costly a wrong answer is (category) × how hard it is for the
-// asker to spot one (persona) × answerability, so setup gaps don't dominate.
-const CAT = { troubleshoot: 3, "implementation-logic": 3, "data-lookup": 2, labelizer: 2,
-  "request-drafting": 2, "feasibility-estimate": 2, "how-to": 1.5, "follow-up": 1, general: 0.5 };
-const PER = { support: 1.25, operations: 1.25, "requirement-analyst": 1.15,
-  "layout-designer": 1.0, developer: 0.9, unknown: 1.0 };
-const ANS = { full: 1, partial: 0.75, no: 0.5 };
-const weight = (r) => (CAT[r.category] ?? 1) * (PER[r.persona] ?? 1) * (ANS[r.answerable] ?? 1);
-
-// The agent's own deadline notes, old and new wording; a model that mentions time in its answer is still answered.
-const outOfTime = (r) => r.ok && /I ran out of time before (finishing|I could finish checking|I had anything to tell you)/i.test(r.reply);
-const outcome = (r) => (!r.ok ? (r.tokenLimit ? "token limit" : /not logged in/i.test(r.error) ? "not logged in" : "transport error")
-  : outOfTime(r) ? "out of time" : "answered");
+// Weights and outcomes: outcome.mjs, shared with viewer-data.mjs.
 const answered = (r) => outcome(r) === "answered";
-
-const pct = (a, b) => (b ? `${Math.round((100 * a) / b)}%` : "–");
-const mean = (list) => (list.length ? (list.reduce((s, r) => s + r.score, 0) / list.length).toFixed(2) : "–");
-const weighted = (list) => pct(list.reduce((s, r) => s + weight(r) * r.score, 0), 3 * list.reduce((s, r) => s + weight(r), 0));
 const avgS = (list) => (list.length ? `${Math.round(list.reduce((s, r) => s + r.latencyS, 0) / list.length)} s` : "–");
 
 function groupBy(key) {

@@ -17,6 +17,19 @@ Arguments: `$ARGUMENTS`. Three ways to pick what the report covers:
 | `<run_id> [input.jsonl]` | that run | `reports/run-<run_id>.md` |
 | `today` | every run that ended today | `reports/runs-<YYYY-MM-DD>.md` |
 | `<from> [<to>]` (`YYYY-MM-DD`) | every run that ended from `<from>` to `<to>`, both days included; `<from>` alone is that one day | `reports/runs-<from>_<to>.md` (`runs-<day>.md` for one day) |
+| `upload <run_id \| window>` | **no new report**: uploads that report's viewer file to the benchmark viewer on spark | `reports/run-<run_id>.viewer.json` (or `runs-<window>.viewer.json`), on spark |
+
+**Uploading** happens only when the user asks for it with `upload`; a normal report never
+uploads anything. For `upload`, skip every step below and run only:
+
+```bash
+node .claude/skills/benchmark-report/scripts/upload-report.mjs reports/run-<run_id>.viewer.json
+```
+
+It refuses anything but a `*.viewer.json` directly in `reports/`. If the file isn't there,
+the report was made before the viewer existed: run `viewer-data.mjs` on its work folder
+first (step 6). It reads the `VIEWER_SSH_*` settings from `.env` itself; if it says they are
+missing, ask the user to fill them in. Give the URL it prints.
 
 Label details from RetailerIntegration (step 2b) are always fetched when an item names a
 label id. An old `labels` argument is accepted and ignored.
@@ -268,6 +281,15 @@ It replaces `<!-- label-details -->` with `labels.md` and `<!-- appendix -->` wi
 `appendix.md`. It refuses, and leaves the report unchanged, when a marker or a file is
 missing. Run it once and don't read the result back.
 
+Then write the viewer file, which the benchmark viewer's Results tab shows:
+
+```bash
+node .claude/skills/benchmark-report/scripts/viewer-data.mjs reports/work/<name>
+```
+
+It writes `reports/run-<id>.viewer.json` (or `runs-<window>.viewer.json`) and prints one
+line. It stays local and is git-ignored; it goes to the viewer only with `upload`.
+
 ## Care points
 
 - The appendix holds customer names and order numbers from real sessions. Say so when
@@ -278,4 +300,7 @@ missing. Run it once and don't read the result back.
 - Don't read `.env`. Everything needed comes from Postgres, Docker and the input file
   (and from `label-ri.mjs`, which reads `.env` itself).
 - Personas are inferred, not recorded. Say so in Limitations.
-- When done, give the path to the report and the headline numbers in your answer.
+- The viewer file holds the same customer data as the appendix. It is uploaded only to the
+  viewer on spark, and only when the user asks with `upload`; never anywhere else.
+- When done, give the path to the report, the path to its viewer file and the headline
+  numbers in your answer. Mention that `/benchmark-report upload <run_id>` puts it in the viewer.

@@ -371,6 +371,56 @@ The skill is in `.claude/skills/benchmark-report/`:
 Working files go to `reports/work/`, which is git-ignored. The appendix of a
 report contains customer names and order numbers from real sessions.
 
+## Viewer
+
+A read-only page on the spark server where anyone who can reach spark (you, Iwan,
+your manager) can look at the data, without the benchmark app:
+
+- **Questions (JSONL):** pick an input file, and see its sessions and messages
+  as on `/new`, with the same badges and filter. There's no selection, model or
+  Start. **The file is read in the browser only. It is never uploaded or stored**,
+  on spark or anywhere else.
+- **Results:** pick one of the reports uploaded to spark, and see its facts,
+  weighted score and outcomes. A table per session shows type, persona, score,
+  outcome and verdict, with filters. Each message expands to the question, the
+  expected answer and Hanuman's reply.
+
+It's one HTML file, [viewer/index.html](viewer/index.html), served by our own
+image (Debian-based nginx, [deploy/viewer/](deploy/viewer/)), built on spark
+itself with Docker Compose. Nothing runs in it but nginx.
+
+**Deploy or update it.** Set the `VIEWER_SSH_*` values in `.env` (see
+`.env.example`; the SSH user must be allowed to run `docker`), then run this
+again whenever the page changes:
+
+```bash
+npm run viewer:deploy
+```
+
+It copies the build files to `/opt/benchmark-viewer/build` on spark, and runs
+`docker compose up -d --build` there. Open `http://<spark>:4210`.
+
+**Put a report in it.** Every `/benchmark-report` also writes
+`reports/run-<id>.viewer.json`, which stays local and is git-ignored. Upload one
+only when you want it in the viewer:
+
+```text
+/benchmark-report upload 1793885687
+```
+
+That copies only that file to `/opt/benchmark-viewer/reports` on spark. The
+viewer file holds customer names and order numbers, like the report.
+
+**Check it on spark:**
+
+```bash
+docker ps --filter name=benchmark-viewer
+```
+
+```bash
+docker logs --tail 20 benchmark-viewer
+```
+
 ## Releases
 
 Every pull request and push to `main` runs the tests (`.github/workflows/ci.yml`).

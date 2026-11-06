@@ -5,3 +5,5 @@ lcov.info
 .scannerwork/
 *.sw?
 reports/work/
+# Viewer files hold customer data; they go to the viewer on request, never to git.
+reports/*.viewer.json

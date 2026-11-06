@@ -1,0 +1,16 @@
+# The benchmark viewer on the spark server, run with plain Docker Compose.
+# `npm run viewer:deploy` copies this folder (plus viewer/index.html) to
+# $VIEWER_SSH_DIR/build on spark and runs `docker compose up -d --build` there.
+# Reports uploaded with the report skill land in $VIEWER_SSH_DIR/reports.
+name: benchmark-viewer
+
+services:
+  viewer:
+    build: .
+    image: benchmark-viewer:local
+    container_name: benchmark-viewer
+    restart: unless-stopped
+    ports:
+      - "${VIEWER_PORT:-4210}:80"
+    volumes:
+      - ${VIEWER_REPORTS_DIR:-../reports}:/usr/share/nginx/html/reports:ro
