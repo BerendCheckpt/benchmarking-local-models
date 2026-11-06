@@ -16,12 +16,16 @@ services:
       - "0"
     environment:
       QA_SESSIONS_SSH_KEY_FILE: /run/secrets/qa_sessions_key
+      # The viewer sync logs in to spark with VIEWER_SSH_*; a key, if any, is mounted
+      # below. Empty without VIEWER_SSH_KEY_PATH, so the password is used.
+      VIEWER_SSH_KEY_FILE: ${VIEWER_SSH_KEY_PATH:+/run/secrets/viewer_key}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./data:/data
       # Private key for the QA sessions host, read-only. Without a key path the
       # mount is /dev/null and messages that had a file are skipped.
       - ${QA_SESSIONS_SSH_KEY_PATH:-/dev/null}:/run/secrets/qa_sessions_key:ro
+      - ${VIEWER_SSH_KEY_PATH:-/dev/null}:/run/secrets/viewer_key:ro
     networks:
       - pg
 

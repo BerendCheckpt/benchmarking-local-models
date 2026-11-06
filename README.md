@@ -398,10 +398,10 @@ report contains customer names and order numbers from real sessions.
 A read-only page on the spark server where anyone who can reach spark (you, Iwan,
 your manager) can look at the data, without the benchmark app:
 
-- **Questions (JSONL):** pick an input file, and see its sessions and messages
-  as on `/new`, with the same badges and filter. There's no selection, model or
-  Start. **The file is read in the browser only. It is never uploaded or stored**,
-  on spark or anywhere else.
+- **Questions:** pick a date-time range, and see the stored messages asked in it
+  as on `/new`: sessions, earlier turns marked `context`, the same badges and
+  filter. There's no selection, model or Start. The messages come from the
+  viewer's own Postgres on spark (see below). No JSONL file is ever stored there.
 - **Results:** pick one of the reports uploaded to spark, and see its facts,
   weighted score and outcomes. A table per session shows type, persona, score,
   outcome and verdict, with filters. Each message expands to the question, the
@@ -409,7 +409,28 @@ your manager) can look at the data, without the benchmark app:
 
 It's one HTML file, [viewer/index.html](viewer/index.html), served by our own
 image (Debian-based nginx, [deploy/viewer/](deploy/viewer/)), built on spark
-itself with Docker Compose. Nothing runs in it but nginx.
+itself with Docker Compose. Next to it, from a second compose file
+([docker-compose.db.yml](deploy/viewer/docker-compose.db.yml)):
+- `benchmark-viewer-db`: `postgres:18.6-bookworm`, data in the volume
+  `benchmark-viewer-pgdata`, published on spark's **loopback only**
+  (`127.0.0.1:5435`);
+- `benchmark-viewer-api`: a read-only Node API ([viewer/api.mjs](viewer/api.mjs)),
+  `GET /api/exports?from=&to=`, which nginx passes `/api/` to.
+
+**Keeping its messages in step.** The viewer's database holds a copy of
+`benchmark_results.hanuman_exports`, one way, with the same ids. The app copies
+what spark doesn't have yet right after every upload on `/new` (the page says how
+many), through an SSH tunnel with the `VIEWER_SSH_*` login; the database is never
+reachable from the network. An upload still succeeds when spark is down. To copy
+everything the first time, or to catch up after spark was down:
+
+```bash
+npm run viewer:sync
+```
+
+It runs inside the app container, which reaches both databases. Set
+`VIEWER_PG_PASSWORD` (and, for a key login, `VIEWER_SSH_KEY_PATH`) in `.env` first;
+without the password the app doesn't sync.
 
 **Deploy or update it.** Set the `VIEWER_SSH_*` values in `.env` (see
 `.env.example`; the SSH user must be allowed to run `docker`), then run this
@@ -419,8 +440,10 @@ again whenever the page changes:
 npm run viewer:deploy
 ```
 
-It copies the build files to `/opt/benchmark-viewer/build` on spark, and runs
-`docker compose up -d --build` there. Open `http://<spark>:4210`.
+It copies the build files to `/opt/benchmark-viewer/build` on spark, with a
+`.env` (mode 600) holding the database settings from `VIEWER_PG_*`, and runs
+`docker compose -f docker-compose.yml -f docker-compose.db.yml up -d --build`
+there. Open `http://<spark>:4210`.
 
 **Put a report in it.** Every `/benchmark-report` also writes
 `reports/run-<id>.viewer.json`, which stays local and is git-ignored. Upload one
@@ -440,7 +463,11 @@ docker ps --filter name=benchmark-viewer
 ```
 
 ```bash
-docker logs --tail 20 benchmark-viewer
+docker logs --tail 20 benchmark-viewer-api
+```
+
+```bash
+docker exec benchmark-viewer-db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "select count(*) from benchmark_results.hanuman_exports"'
 ```
 
 ## Releases

@@ -46,8 +46,6 @@
     .score { font-weight: 700; }
     .s3 { color: var(--ok); } .s2 { color: var(--accent); } .s1 { color: var(--run); } .s0 { color: var(--bad); }
     .error { color: var(--bad); }
-    .drop { border: 2px dashed var(--border); border-radius: 8px; padding: 12px; }
-    .drop.over { border-color: var(--accent); }
   </style>
 </head>
 <body>
@@ -55,18 +53,20 @@
   <header>
     <h1>Benchmark viewer</h1>
     <nav class="tabs" role="tablist">
-      <button role="tab" id="tab-jsonl" aria-selected="true">Questions (JSONL)</button>
+      <button role="tab" id="tab-jsonl" aria-selected="true">Questions</button>
       <button role="tab" id="tab-results" aria-selected="false">Results</button>
     </nav>
   </header>
 
   <div id="pane-jsonl">
     <section>
-      <div class="drop" id="drop">
-        <label for="file">Questions file (.jsonl)</label>
-        <input id="file" type="file" accept=".jsonl,.json,.txt">
-        <p class="muted">The file is read in this browser only. It is never uploaded or stored.</p>
+      <label for="from">Questions asked from – to (your local time)</label>
+      <div class="toolbar">
+        <input id="from" type="datetime-local">
+        <input id="to" type="datetime-local">
+        <button id="show">Show</button>
       </div>
+      <p class="muted">The messages stored by the benchmark app. A session that started before the range also shows its earlier turns, marked <span class="badge">context</span>.</p>
       <p id="jsonl-message" class="error"></p>
     </section>
     <section id="jsonl-box" hidden>
@@ -95,27 +95,10 @@
   </div>
 </main>
 
-<!-- The parsing and badge rules of the benchmark app (benchmark.mjs, qa-sessions.mjs,
+<!-- The grouping and badge rules of the benchmark app (benchmark.mjs, qa-sessions.mjs,
      labels.mjs), copied. test/viewer.test.mjs runs this block and checks it gives the
      same sessions and badges as the app, so keep the two in step. -->
 <script id="rules">
-  /** Parses JSON Lines rows of `{ session, question, answer, needs? }` (benchmark.mjs parseJsonl). */
-  function parseJsonl(text) {
-    return text.split(/\r?\n/).flatMap((line, i) => {
-      if (!line.trim()) return [];
-      let row;
-      try { row = JSON.parse(line); } catch { throw new Error(`line ${i + 1}: not valid JSON`); }
-      if (typeof row?.question !== "string" || !row.question.trim()) throw new Error(`line ${i + 1}: "question" missing`);
-      if (row.needs !== undefined && !(Array.isArray(row.needs) && row.needs.every((n) => typeof n === "string"))) {
-        throw new Error(`line ${i + 1}: "needs" must be a list of strings`);
-      }
-      return [{
-        session: row.session ?? null, question: row.question, answer: row.answer ?? "", needs: row.needs ?? null,
-        askedAt: typeof row.askedAt === "string" ? row.askedAt : null, line: i + 1,
-      }];
-    });
-  }
-
   const MIRROR_WORDS = /\b(fds|source code|plugin.{0,12}(code|logic)|(import|export) (logic|process|plugin)|implemented|business rules?|layout designer)\b/i;
   function needsMirror(row) {
     return row.needs ? row.needs.includes("mirror") : MIRROR_WORDS.test(row.question);
@@ -157,11 +140,12 @@
     return [...groups.values()];
   }
 
-  /** The file as the app's selection page shows it (benchmark.mjs previewSessions). */
+  /** The messages as the app's selection page shows them (benchmark.mjs previewSessions). */
   function previewSessions(rows) {
     return groupBySession(rows).map((group, i) => ({
       label: group[0].session ?? `(no session) #${i + 1}`,
       messages: group.map((r) => ({
+        ...(r.id ? { id: r.id, context: !!r.context } : {}),
         line: r.line, question: r.question, answer: r.answer, askedAt: r.askedAt,
         needsMirror: needsMirror(r),
         files: attachmentRefs(r.question).map((f) => f.name),
@@ -198,7 +182,7 @@
   $("tab-jsonl").onclick = () => show("jsonl");
   $("tab-results").onclick = () => show("results");
 
-  // ---- Questions (JSONL): read in the browser only ----
+  // ---- Questions: the stored messages, from the viewer's database ----
   let sessions = [];
   const allMessages = () => sessions.flatMap((s) => s.messages);
   const matches = (m, text) => !text || [m.question, m.answer, ...m.files, ...m.labelIds.map((l) => `label ${l}`)]
@@ -206,6 +190,7 @@
 
   function badges(m) {
     return [
+      m.context ? `<span class="badge" title="Asked before the range; an earlier turn of this session">context</span>` : "",
       ...m.files.map((f) => `<span class="badge file" title="The asker attached this file">file: ${esc(f)}</span>`),
       m.labelizer ? `<span class="badge label">labelizer generation</span>` : "",
       ...m.labelIds.map((l) => `<span class="badge label">label ${esc(l)}</span>`),
@@ -226,34 +211,39 @@
       // Each session is a visible group: its header, then all of its messages under it.
       const head = `Session ${esc(s.label.slice(0, 8))} <span class="stats">· ${plural(s.messages.length, "message")}`
         + `${sDates.length ? ` · ${sDates[0]}${sDates.length > 1 ? ` to ${sDates.at(-1)}` : ""}` : ""}</span>`;
-      const rows = visible.map(({ m, i }) => `<div class="message">${details(`m${m.line}`,
+      const rows = visible.map(({ m, i }) => `<div class="message">${details(`m${m.id}`,
         `<strong>${i + 1}.</strong> ${short(m.question)}${badges(m)}`,
-        `<div class="muted">Question <span class="mono">(line ${m.line}${m.askedAt ? `, asked ${esc(m.askedAt)}` : ""})</span></div><pre>${esc(m.question)}</pre>
+        `<div class="muted">Question${m.askedAt ? ` <span class="mono">(asked ${esc(m.askedAt)})</span>` : ""}</div><pre>${esc(m.question)}</pre>
          <div class="muted">Expected answer</div><pre>${esc(m.answer || "(none)")}</pre>`)}</div>`).join("");
       return `<div class="session" data-session="${si}"><div class="session-head">${head}</div><div class="messages">${rows}</div></div>`;
     }).join("") || `<p class="muted">No message matches the filter.</p>`;
   }
 
-  async function loadJsonl(file) {
+  // datetime-local holds local time without a zone; Date reads it as local.
+  const localInput = (d) => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  $("to").value = localInput(new Date());
+  $("from").value = localInput(new Date(Date.now() - 7 * 24 * 3600 * 1000));
+
+  async function loadRange() {
     $("jsonl-message").textContent = "";
     sessions = [];
     opened.clear();
-    if (file) {
-      try {
-        sessions = previewSessions(parseJsonl(await file.text()));
-      } catch (err) {
-        $("jsonl-message").textContent = `${file.name}: ${err.message}`;
-      }
+    try {
+      if (!$("from").value || !$("to").value) throw new Error("Pick both a from and a to time.");
+      const query = new URLSearchParams({ from: new Date($("from").value).toISOString(), to: new Date($("to").value).toISOString() });
+      const res = await fetch(`api/exports?${query}`, { cache: "no-store" });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || `could not load the messages (HTTP ${res.status})`);
+      sessions = previewSessions(body.rows);
+      if (!sessions.length) $("jsonl-message").textContent = "No stored message was asked in that range.";
+    } catch (err) {
+      $("jsonl-message").textContent = err.message;
     }
     $("jsonl-box").hidden = !sessions.length;
     if (sessions.length) renderJsonl();
   }
-  $("file").addEventListener("change", (e) => loadJsonl(e.target.files[0]));
+  $("show").addEventListener("click", loadRange);
   $("jsonl-filter").addEventListener("input", renderJsonl);
-  const drop = $("drop");
-  drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
-  drop.addEventListener("dragleave", () => drop.classList.remove("over"));
-  drop.addEventListener("drop", (e) => { e.preventDefault(); drop.classList.remove("over"); loadJsonl(e.dataTransfer.files[0]); });
 
   // ---- Results: the reports uploaded to the server's reports/ folder ----
   let reportsListed = false, report = null;

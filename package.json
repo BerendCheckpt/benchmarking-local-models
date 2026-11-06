@@ -8,6 +8,7 @@
   "scripts": {
     "start": "node server.mjs",
     "viewer:deploy": "node scripts/viewer-deploy.mjs",
+    "viewer:sync": "docker compose exec -T benchmark node viewer-sync.mjs",
     "test": "node --test --experimental-test-coverage --test-reporter=spec --test-reporter-destination=stdout --test-reporter=lcov --test-reporter-destination=lcov.info \"test/*.test.mjs\""
   },
   "dependencies": {

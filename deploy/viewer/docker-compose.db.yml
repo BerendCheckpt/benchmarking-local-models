@@ -1,0 +1,52 @@
+# The viewer's database and its read-only API, added to the viewer's compose
+# project. `npm run viewer:deploy` runs, in $VIEWER_SSH_DIR/build on spark:
+#   docker compose -f docker-compose.yml -f docker-compose.db.yml up -d --build
+# so all three share one network. Settings come from build/.env there, which the
+# deploy writes (mode 600): POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD, VIEWER_PG_PORT.
+#
+# Postgres listens on spark's loopback only; the app copies messages to it
+# through an SSH tunnel (npm run viewer:sync). Nothing new is open on the network.
+services:
+  viewer-db:
+    image: postgres:18.6-bookworm
+    container_name: benchmark-viewer-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?set in build/.env}
+      POSTGRES_USER: ${POSTGRES_USER:?set in build/.env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in build/.env}
+    volumes:
+      # Postgres 18 keeps its data under /var/lib/postgresql/18/docker.
+      - benchmark-viewer-pgdata:/var/lib/postgresql
+    ports:
+      - "127.0.0.1:${VIEWER_PG_PORT:-5435}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h localhost -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  viewer-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    image: benchmark-viewer-api:local
+    container_name: benchmark-viewer-api
+    restart: unless-stopped
+    environment:
+      PGHOST: viewer-db
+      PGPORT: "5432"
+      PGDATABASE: ${POSTGRES_DB}
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    depends_on:
+      viewer-db:
+        condition: service_healthy
+
+  viewer:
+    depends_on:
+      - viewer-api
+
+volumes:
+  benchmark-viewer-pgdata:
+    name: benchmark-viewer-pgdata

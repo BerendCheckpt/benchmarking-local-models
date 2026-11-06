@@ -206,7 +206,9 @@
       });
       $("upload-note").textContent = `${c.inserted} new, ${c.duplicates} already stored`
         + `${c.withoutAskedAt ? ` (${c.withoutAskedAt} without a question date, so no range picks them)` : ""}`
-        + `${c.failed ? `, ${c.failed} failed (see the app log)` : ""}.`;
+        + `${c.failed ? `, ${c.failed} failed (see the app log)` : ""}.`
+        + (c.viewer?.error ? ` Copy to the viewer failed: ${c.viewer.error}`
+          : c.viewer ? ` Copied ${c.viewer.copied} to the viewer${c.viewer.failed ? `, ${c.viewer.failed} failed` : ""}.` : "");
       // An overview that is already showing a range picks up what was just stored.
       if (range) await loadRange(range.from, range.to, { keepTicks: true });
     } catch (err) {

@@ -6,6 +6,7 @@
 //   <P>_PASSWORD, or <P>_KEY_FILE (+ optional <P>_KEY_PASSPHRASE)
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import net from "node:net";
 import { Client } from "ssh2";
 
 /** OpenSSH-style "SHA256:..." fingerprint of a raw host key. */
@@ -68,6 +69,35 @@ export class SshTarget {
               });
             stream.stderr.on("data", (d) => errOut.push(d));
           });
+        })
+        .on("error", reject)
+        .connect(options);
+    });
+  }
+
+  /**
+   * An SSH tunnel to `remotePort` on the host's loopback (`ssh -L` without the
+   * binary). Resolves `{ port, close() }`: connect to 127.0.0.1:port here.
+   * Same login and host-key pin as exec.
+   */
+  tunnel(remotePort) {
+    return new Promise((resolve, reject) => {
+      let options;
+      try { options = this.connectOptions(); } catch (err) { return reject(err); }
+      const conn = new this.Client();
+      const server = net.createServer((socket) => {
+        conn.forwardOut("127.0.0.1", 0, "127.0.0.1", remotePort, (err, channel) => {
+          if (err) return socket.destroy(err);
+          socket.pipe(channel).pipe(socket);
+          socket.on("error", () => channel.close());
+          channel.on("error", () => socket.destroy());
+        });
+      });
+      const close = () => new Promise((done) => { server.close(() => done()); conn.end(); });
+      conn
+        .on("ready", () => {
+          server.on("error", (err) => { conn.end(); reject(err); });
+          server.listen(0, "127.0.0.1", () => resolve({ port: server.address().port, close }));
         })
         .on("error", reject)
         .connect(options);

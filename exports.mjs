@@ -55,6 +55,7 @@ export class ExportsRepository {
   constructor(db) { this.db = db; }
 
   async ensure() {
+    await this.db.query(`CREATE SCHEMA IF NOT EXISTS benchmark_results`);
     await this.db.query(`CREATE TABLE IF NOT EXISTS ${TABLE} (
       id uuid PRIMARY KEY,
       seq bigint GENERATED ALWAYS AS IDENTITY,
@@ -110,6 +111,31 @@ export class ExportsRepository {
       [start, end],
     );
     return orderForRun(rows.map(toRow));
+  }
+
+  /** Every stored id (for the sync to the viewer's database). */
+  async ids() {
+    const { rows } = await this.db.query(`SELECT id FROM ${TABLE}`);
+    return rows.map((r) => r.id);
+  }
+
+  /** The stored rows whose id is not in `ids`, in upload order, as they are in the table. */
+  async allExcept(ids) {
+    const { rows } = await this.db.query(
+      `SELECT id, session, question, answer, needs, asked_at, dedup_key FROM ${TABLE}
+       WHERE NOT (id = ANY($1::uuid[])) ORDER BY seq`, [ids],
+    );
+    return rows;
+  }
+
+  /** Stores a row copied from another database, keeping its id; returns false when it was there already. */
+  async insertStored(r) {
+    const { rowCount } = await this.db.query(
+      `INSERT INTO ${TABLE} (id, session, question, answer, needs, asked_at, dedup_key)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING`,
+      [r.id, r.session, r.question, r.answer ?? "", r.needs == null ? null : JSON.stringify(r.needs), r.asked_at, r.dedup_key],
+    );
+    return rowCount > 0;
   }
 
   /** The chosen messages, in run order. Throws a 400 for a bad or unknown id. */
