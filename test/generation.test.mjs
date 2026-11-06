@@ -69,6 +69,23 @@ test("generationReply summarises result.json and the template's objects", () => 
   assert.match(generationReply({ template: "{", result: {} }), /Caveats: none\nTemplate: not valid JSON$/);
 });
 
+test("generationReply counts barcode objects from every engine namespace", () => {
+  // Run 1793950764: barcodes typed CheckNet.Labelizer.Engine.EAN13Object were left out of the line.
+  const template = JSON.stringify({
+    $type: "CheckNet.Labelizer.Engine.Template.TemplateDocument",
+    Objects: [
+      { $type: "CheckNet.Labelizer.Engine.Template.Objects.TextObject" },
+      { $type: "CheckNet.Labelizer.Engine.EAN13Object" },
+      { $type: "CheckNet.Labelizer.Engine.QRObject, CheckNet.Labelizer.Engine" },
+      { $type: "CheckNet.Labelizer.Engine.Template.BarcodeObject" },
+      { $type: "CheckNet.Labelizer.Engine.Template.Group",
+        Children: [{ $type: "CheckNet.Labelizer.Engine.DataMatrixObject" }] },
+    ],
+  });
+  assert.match(generationReply({ template, result: {} }),
+    /Template: 5 objects \(TextObject 1, EAN13Object 1, QRObject 1, BarcodeObject 1, DataMatrixObject 1\)$/);
+});
+
 test("a generation row goes to postFromPdf with the PDF and ids, not to /chat", async () => {
   const calls = [];
   const agent = {
@@ -96,6 +113,15 @@ test("a failed /from-pdf call is saved as an error", async () => {
   assert.equal(result.ok, false);
   assert.equal(result.error, "HTTP 500: boom");
   assert.equal(result.reply, "");
+  assert.equal(result.tokenLimit, false);
+});
+
+test("a /from-pdf call that passed the output token maximum is saved as a token limit", async () => {
+  const message = "HTTP 500: Claude Code returned an error result: API Error: Claude's response exceeded the 42000 output token maximum.";
+  const result = await generate(PROMPT, [PDF], async () => { throw new Error(message); });
+  assert.equal(result.ok, false);
+  assert.equal(result.tokenLimit, true);
+  assert.equal(result.error, message);
 });
 
 test("without a PDF there is nothing to send", async () => {
