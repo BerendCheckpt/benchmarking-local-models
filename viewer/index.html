@@ -28,10 +28,14 @@
     .tabs button[aria-selected=true] { background: var(--accent); border-color: var(--accent); color: #fff; }
     .toolbar { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px 12px; margin: 8px 0; }
     .toolbar input, .toolbar select { width: 100%; padding: 5px 8px; }
-    .session { border-top: 1px solid var(--border); padding: 8px 0; }
-    .session > details > summary { font-weight: 600; }
-    .messages { margin: 4px 0 4px 16px; }
+    .session { border: 1px solid var(--border); border-radius: 8px; margin: 12px 0; overflow: hidden; }
+    .session-head { background: var(--code); padding: 8px 12px; font-weight: 600; }
+    .session-head .stats { margin-left: 2px; }
+    .messages { padding: 0 12px; }
     .message { border-top: 1px solid var(--border); padding: 6px 0; }
+    .message:first-child { border-top: 0; }
+    .session table { margin: 0; }
+    .session th:first-child, .session td:first-child { padding-left: 12px; }
     .stats, .muted { color: var(--muted); font-weight: normal; }
     .facts { display: flex; flex-wrap: wrap; gap: 4px 16px; color: var(--muted); font-size: 14px; }
     .facts b { color: var(--fg); }
@@ -219,14 +223,14 @@
       const visible = s.messages.map((m, i) => ({ m, i })).filter(({ m }) => matches(m, text));
       if (!visible.length) return "";
       const sDates = [...new Set(s.messages.map((m) => day(m.askedAt)).filter(Boolean))].sort();
-      const summary = `${esc(s.label.slice(0, 8))} <span class="stats">· ${plural(s.messages.length, "message")}`
-        + `${sDates.length ? ` · ${sDates[0]}${sDates.length > 1 ? ` to ${sDates.at(-1)}` : ""}` : ""}</span>`
-        + `<div class="muted">${short(s.messages[0].question)}</div>`;
+      // Each session is a visible group: its header, then all of its messages under it.
+      const head = `Session ${esc(s.label.slice(0, 8))} <span class="stats">· ${plural(s.messages.length, "message")}`
+        + `${sDates.length ? ` · ${sDates[0]}${sDates.length > 1 ? ` to ${sDates.at(-1)}` : ""}` : ""}</span>`;
       const rows = visible.map(({ m, i }) => `<div class="message">${details(`m${m.line}`,
         `<strong>${i + 1}.</strong> ${short(m.question)}${badges(m)}`,
         `<div class="muted">Question <span class="mono">(line ${m.line}${m.askedAt ? `, asked ${esc(m.askedAt)}` : ""})</span></div><pre>${esc(m.question)}</pre>
          <div class="muted">Expected answer</div><pre>${esc(m.answer || "(none)")}</pre>`)}</div>`).join("");
-      return `<div class="session">${details(`s${si}`, summary, `<div class="messages">${rows}</div>`)}</div>`;
+      return `<div class="session" data-session="${si}"><div class="session-head">${head}</div><div class="messages">${rows}</div></div>`;
     }).join("") || `<p class="muted">No message matches the filter.</p>`;
   }
 
@@ -333,9 +337,10 @@
           <td>${esc((r.answerable ?? "").slice(0, 1).toUpperCase())}</td>
           <td class="score s${esc(r.score ?? "")}">${esc(r.score ?? "–")}</td><td>${esc(r.outcome)}${r.contextRecap ? " (recap)" : ""}</td>
           <td>${details(`r${r.id}`, esc(r.verdict ?? r.skipReason ?? ""), messageBody(r))}</td></tr>`).join("")}</tbody></table>`;
-      const summary = `${esc(String(rows[0].session ?? "(no session)").slice(0, 8))} <span class="stats">· ${plural(rows.length, "message")} · mean ${mean}`
-        + `${rows[0].askedAt ? ` · asked ${esc(day(rows[0].askedAt))}` : ""}</span><div class="muted">${short(rows[0].question)}</div>`;
-      return `<div class="session">${details(`g${key}`, summary, body)}</div>`;
+      // Each session is a visible group: its header, then its messages' table.
+      const head = `Session ${esc(String(rows[0].session ?? "(no session)").slice(0, 8))} <span class="stats">·${plural(rows.length, "message")} · mean ${mean}`
+        + `${rows[0].askedAt ? ` · asked ${esc(day(rows[0].askedAt))}` : ""}</span>`;
+      return `<div class="session"><div class="session-head">${head}</div>${body}</div>`;
     }).join("");
     $("results").innerHTML = html || `<p class="muted">No message matches the filters.</p>`;
   }
