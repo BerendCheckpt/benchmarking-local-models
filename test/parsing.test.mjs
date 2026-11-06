@@ -7,10 +7,10 @@ import { parseOllamaList, fingerprint } from "../ollama.mjs";
 import { pkcePair } from "../oauth.mjs";
 
 test("parseJsonl skips blank lines and defaults answer and session", () => {
-  const rows = parseJsonl('{"session":"a","question":"q1","answer":"x"}\n\n{"question":"q2"}\r\n');
+  const rows = parseJsonl('{"session":"a","question":"q1","answer":"x","askedAt":"2026-11-04T10:00:00Z"}\n\n{"question":"q2"}\r\n');
   assert.deepEqual(rows, [
-    { session: "a", question: "q1", answer: "x", needs: null },
-    { session: null, question: "q2", answer: "", needs: null },
+    { session: "a", question: "q1", answer: "x", needs: null, askedAt: "2026-11-04T10:00:00Z", line: 1 },
+    { session: null, question: "q2", answer: "", needs: null, askedAt: null, line: 3 },
   ]);
 });
 

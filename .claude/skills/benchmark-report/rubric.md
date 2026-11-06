@@ -32,10 +32,33 @@ The judge gets the access table for this run with the brief. The usual picture:
 
 ### Caveats (important when judging)
 
-- **No attachments in the replay.** The input has the question text only. A question
-  that relied on a screenshot, PDF, XML or spreadsheet cannot be fully answered. The
+- **Attachments.** When `attachments` is set, the files listed there were recovered
+  from the QA session and sent with the replay. These are PDFs and images; judge the
+  reply as if the asker attached them. When it is empty but the question names a file,
+  the replay ran without it, as all runs before this feature did. A question that
+  relied on a screenshot, PDF, XML or spreadsheet then cannot be fully answered. The
   right behaviour is to say the attachment is missing and ask for the key detail, or to
   answer from what the text does give.
+- **Label history.** `labelFeedback` on an item gives the RetailerIntegration history
+  of each label id the question names (`ri.labelizer_generation_feedback`):
+  - generations and corrections in total, and before and after the question;
+  - minutes from the question to the next correction;
+  - minutes from the first generation to the first correction.
+
+  It also has:
+  - `retailers`: the retailers the label id has rows for;
+  - `shared`: true when the id covers more than one label (several retailers, or
+    generations from different PDFs), so its counts aren't about one template;
+  - `pdfMatch`: whether the PDF sent with the message is the one RI generated the label
+    from (`match`, `name only`, `different PDF`, `no RI generation`, `no attachment`).
+
+  Corrections after a generation mean someone had to fix the generated template. Use it
+  for `labelCheck`. `CreatedBy` is never included.
+- **Generation calls.** A message that starts "Use the labelizer skill to convert a
+  label PDF…" is a labelizer generation call. When it was replayed against the agent's
+  `/from-pdf` endpoint, `reply` is a summary of the generated files: label size, dpi,
+  object count and types, and caveats. Judge that summary against `expected`'s
+  description of the template.
 - **Data drift.** The expected answer is days or weeks older. If a reply differs from
   `expected` because of fetched data that plausibly changed, it is not wrong.
 - **Different user.** The replay runs as the benchmark operator, so permissions may
@@ -70,7 +93,11 @@ Return a JSON array with one object per item, keyed by `id`. Write it to the
   "score": 2,
   "grounded": "yes",
   "verdict": "≤25 words: what the reply got right/wrong vs expected",
-  "flags": ["hallucination"] }
+  "flags": ["hallucination"],
+  "relevant": "yes",
+  "stopped": null,
+  "roleFit": "Support wants the status and the next step first; drop the API detail.",
+  "labelCheck": "n/a" }
 ```
 
 ### category (question type): pick one
@@ -103,7 +130,7 @@ Infer it from the wording and the rest of the session.
 ### access (what a correct answer needs): one or more
 
 - `backoffice-api`, `ri-api`, `spec-code-fds`, `labelizer-docs`, `issue-tool`
-- `attachment` (missing in the replay)
+- `attachment` (sent when `attachments` is set, missing otherwise)
 - `session-context`
 - `none` (pure reasoning or knowledge)
 - `out-of-reach` (needs something the agent cannot touch: a database, logs, servers,
@@ -141,3 +168,49 @@ Infer it from the wording and the rest of the session.
 `stale-or-drifted-data`, `context-lost`, `token-limit`, `transport-error`,
 `better-than-expected`, `too-verbose`, `wrong-language`, `unsafe-action`,
 `refused-wrongly`.
+
+### relevant
+
+- `yes`: within what Hanuman is for. That covers:
+  - the CNU Back Office and its master data and orders;
+  - Retailer Integration;
+  - the Labelizer and Layout Designer;
+  - FDS and plugin logic;
+  - drafting requests;
+  - questions about Hanuman itself.
+
+  A short follow-up in such a conversation counts too.
+- `no`: outside that scope. Examples are general knowledge, coding help unrelated to
+  CNU, small talk beyond a greeting, other companies' systems, and personal advice.
+
+### stopped (only when `relevant: no`; otherwise `null`)
+
+What Hanuman should do with an irrelevant question: stop, and tell the asker in one or
+two sentences that it is outside its scope and what it can help with.
+- `yes`: it declined, said why, and pointed to what it can do.
+- `partial`: it declined without saying why, or answered and only then noted the scope.
+- `no`: it answered as if the question were in scope.
+
+Score an irrelevant question on this: `yes` → 3, `partial` → 1–2, `no` → 0–1. An
+answer that is long and confident but off-scope is a 0.
+
+### roleFit
+
+One sentence (≤25 words) on how this reply should change for this persona:
+- depth and wording (a support agent needs the status and next step, a developer the
+  technical cause);
+- whether to ask a clarifying question first;
+- which skill or data source to use;
+- how to say "not my scope".
+
+Fill it when `score ≤ 2` or `stopped` is not `yes`. Otherwise use `null`.
+
+### labelCheck (only for items with `labelFeedback`; otherwise `n/a`)
+
+- `consistent`: the reply fits the label's history. For example, it flags the same
+  problems that later needed corrections, or it says the template needs checking when
+  corrections followed.
+- `contradicts`: the reply claims something the history disproves. For example, it
+  calls the generated template correct or complete while corrections followed soon
+  after, or it describes a state the history doesn't show.
+- `n/a`: the history says nothing about what the reply claims.

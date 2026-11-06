@@ -44,6 +44,11 @@ flowchart LR
    the agent session that the previous answer returned. Every POST may take up to
    **10 minutes**, and the agent is told the same through
    `x-assistant-deadline-seconds: 600`.
+   Labelizer generation calls (`Target LabelId:` prompts) go to `/from-pdf`
+   instead, as in QA. The app waits for the job's real result
+   (`GENERATE_TIMEOUT_S`, default 21600 s = 6 h): the agent keeps a job running
+   after its caller leaves, so giving up earlier only stacks the next job on top.
+   See [Messages that had a file](#messages-that-had-a-file).
 5. **Results.** The SSE stream is reduced to one row per answer, using the same
    logic as the n8n "Build result" node. Each row is inserted into
    `benchmark_results.rsults` with the model name.
@@ -153,10 +158,16 @@ docker compose --profile agent build agent
 | `AGENT_OLLAMA_URL` | Written to the agent's `ANTHROPIC_BASE_URL`; leave empty to keep the current value |
 | `AGENT_ENV` | `env` sent in each `/chat` body |
 | `AGENT_MAX_OUTPUT_TOKENS` | Written to the agent's `CLAUDE_CODE_MAX_OUTPUT_TOKENS`. Default `42000` (Claude Code's own default is 32000) |
+| `GENERATE_TIMEOUT_S` | Seconds the app waits for a labelizer generation call to `/from-pdf`. Default `21600` (6 h). A local model can need about an hour per template, and the agent keeps working after the app stops waiting |
 | `AGENT_REPO_MIRROR` | Docker volume or host path with the repo mirror, mounted read-only at `/srv/repos` in the agent. Empty: no mirror |
 | `OLLAMA_SSH_HOST` / `OLLAMA_SSH_PORT` | Ollama server SSH address |
 | `OLLAMA_SSH_USER` / `OLLAMA_SSH_PASSWORD` | Your SSH login |
 | `OLLAMA_SSH_HOSTKEY_SHA256` | Optional host key pin (`SHA256:…`); when set, the app refuses any other server |
+| `QA_SESSIONS_SSH_HOST` / `QA_SESSIONS_SSH_PORT` / `QA_SESSIONS_SSH_USER` | The QA host with the agent's session transcripts (not the Ollama server). Empty: messages that had a file are skipped |
+| `QA_SESSIONS_SSH_KEY_PATH` | Host path of your private key for that host. Compose mounts it read-only and sets `QA_SESSIONS_SSH_KEY_FILE` |
+| `QA_SESSIONS_SSH_KEY_PASSPHRASE` | Only if the key has one |
+| `QA_SESSIONS_SSH_HOSTKEY_SHA256` | Optional host key pin for the QA host |
+| `RI_PGHOST` `RI_PGPORT` `RI_PGDATABASE` `RI_PGUSER` `RI_PGPASSWORD` `RI_PGSSLMODE` | RetailerIntegration Postgres (read-only user), for the label history in `/benchmark-report`. Used from your PC, not the container |
 | `PG_NETWORK` | Docker network the app joins to reach Postgres |
 | `PGHOST` `PGPORT` `PGDATABASE` `PGUSER` `PGPASSWORD` | Postgres connection |
 
@@ -183,9 +194,60 @@ from the run 1793258147 report: 73 of its 232 questions need the mirror.
 Extra fields (such as `askedAt`) are ignored. Unlike the n8n flow, sessions with
 fewer than 3 messages are not skipped.
 
+### Messages that had a file
+
+The QA export keeps only the text of a message. A message that had a file still
+shows it: the agent's note "The person attached N file(s) to this message…", or
+a labelizer generation prompt's `INPUT PDF:`. For those messages only, the app
+fetches that QA session's transcript over SSH. This is the Node version of
+`get-session.sh`: `sudo /usr/local/bin/claude-session get <session>` on the QA
+host. The app then sends the file along with the replay:
+
+- A named file is recovered when the agent read it in QA and got it back whole.
+  That covers PDFs and images. Screenshots sent with the message come along too.
+- CSV, XML and spreadsheets come back as text or not at all. Those messages are
+  skipped, and the reason is shown, as is a message whose session can't be
+  fetched or whose files exceed the agent's limits (5 files, 5 MB per image,
+  10 MB per document, 20 MB in total).
+- The old note is removed from the question, because the agent writes its own.
+  The saved `prompt` stays the input line.
+- A labelizer generation prompt is not sent to `/chat`: its recovered PDF goes
+  to the agent's `POST /from-pdf` with the `Target LabelId` and `Target RetailerId`,
+  as QA did. The saved reply is a short summary: `result.json` (label size, dpi,
+  object count, caveats) and the template's objects by type. These rows have no
+  agent session. Without a PDF the message is skipped.
+
+Transcripts contain customer data. They're held in memory for the run only. The
+results table keeps just the file metadata (`attachments`: name, type, size,
+sha256).
+
+## New benchmark page (`/new`)
+
+You start a benchmark here:
+
+1. **Log in** with your CheckNet account. The agent calls the Back Office with it.
+2. **Choose the questions file.** It's checked and shown as sessions with their
+   messages. Everything is selected at first.
+3. **Choose what to ask.**
+   - Tick or untick whole sessions or single messages. Expand a session to read its
+     messages, and a message to read the full question and the expected answer.
+   - Badges help you choose: `file: <name>` (the file is fetched from the QA
+     session), `labelizer generation`, `label <id>` and `needs mirror`.
+   - The filter hides messages that don't contain its text. With a filter, *Select
+     shown* and *Clear shown* change only the messages it shows.
+   - A ticked message whose earlier turns are unticked gets a note: it's asked
+     without those turns, so the agent lacks their context.
+4. **Choose the model** and **start**. Only the ticked messages are asked, in file
+   order and per session, and each saved row keeps its line in the file
+   (`input_line`). The page then switches to the progress page.
+
+`POST /api/run` without `lines` still asks every line.
+
 ## Progress page
 
-While a run is going, the page refreshes every 2 seconds and shows:
+`/` shows the running benchmark, or a link to `/new` when none is running. If your
+login expires during a run, it opens the login again. While a run is going, the page
+refreshes every 2 seconds and shows:
 
 - **Progress**: state, model, answered/total, failures, token-limit answers and
   skipped messages. A grey line says when the repo mirror is missing and which
@@ -273,6 +335,21 @@ In Claude Code, opened in this repository, run:
 /benchmark-report 2026-10-28 2026-11-02
 ```
 
+Besides the scores, the report gives advice:
+- **How Hanuman answers each role**: per persona, what to change in how it answers,
+  phrased for the system prompt or a skill.
+- **Irrelevant questions**: whether Hanuman stops at questions outside its scope and
+  tells the asker so.
+- **Labelizer vs RetailerIntegration**: for every message that names a label id (a
+  labelizer generation call's `Target LabelId: <n>`, or "label id 103" in a question),
+  `scripts/label-ri.mjs` reads the label's history from RetailerIntegration's
+  `ri.labelizer_generation_feedback`. The report then compares the questions with the
+  corrections: how many per question, and how long after the question and after the
+  generation. The judges also check the reply against that history.
+
+The label lookup needs the `RI_PG*` settings in `.env`. Without them, the report leaves
+the comparison out and says so. `CreatedBy` is user data, so keep the report local.
+
 Without arguments it takes the most recent run and finds the matching input file
 in `Benchmark tests local models`. It writes `reports/run-<run_id>.md`. `today`
 covers every run that ended today, and a date range every run that ended in it
@@ -288,6 +365,8 @@ The skill is in `.claude/skills/benchmark-report/`:
 - `rubric.md`: the judging rubric.
 - `scripts/export-run.mjs`: exports a run, or the runs in a date window, from Postgres.
 - `scripts/aggregate.mjs`: weights and tables.
+- `scripts/label-ri.mjs`: label history from RetailerIntegration, before judging.
+- `scripts/match.mjs`: matches a run of chosen messages to its input file by line.
 
 Working files go to `reports/work/`, which is git-ignored. The appendix of a
 report contains customer names and order numbers from real sessions.
@@ -342,6 +421,8 @@ Run `npm test` first so the coverage report is current. Settings are in
 | Symptom | Likely cause |
 |---|---|
 | "Could not load models" | Wrong SSH user/password, or the server isn't reachable on `OLLAMA_SSH_PORT` |
+| Skipped: `qa-session: could not fetch …` | Wrong QA key, user or host pin, the key isn't mounted, or the user may not `sudo claude-session` |
+| Skipped: `attachment not recoverable …` | The file was a CSV, XML or spreadsheet, or a PDF the agent never read in QA |
 | Run stops at "starting agent" | Docker socket not mounted, Enhanced Container Isolation blocks it, or the agent didn't pass `/health` within 60 s |
 | Every answer fails with `HTTP 401` | Refresh token expired or revoked. Log in again |
 | `could not prepare the results table` in the logs | Wrong Postgres credentials, or the app isn't on `PG_NETWORK` |

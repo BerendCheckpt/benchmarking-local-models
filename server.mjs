@@ -2,7 +2,7 @@
 // Listens on PORT, which must match the port in the registered redirect URI.
 import http from "node:http";
 import { readFile } from "node:fs/promises";
-import { parseJsonl, run, snapshot, status } from "./benchmark.mjs";
+import { parseJsonl, previewSessions, run, selectRows, snapshot, status } from "./benchmark.mjs";
 import { ensureSchema, listResultModels, queryResults } from "./db.mjs";
 import { listModels } from "./ollama.mjs";
 import { checkLogin, handleCallback, isLoggedIn, loginUrl } from "./oauth.mjs";
@@ -70,13 +70,24 @@ async function home(req, res, url) {
 async function startRun(req, res) {
   if (!isLoggedIn()) return sendJson(res, 401, { error: "log in first" });
   if (["starting agent", "running"].includes(status.state)) return sendJson(res, 409, { error: "a benchmark is already running" });
-  const { model, jsonl } = await readJson(req);
+  const { model, jsonl, lines } = await readJson(req);
   if (typeof model !== "string" || !model) return sendJson(res, 400, { error: "model required" });
   let rows;
   try { rows = parseJsonl(String(jsonl ?? "")); } catch (err) { return sendJson(res, 400, { error: err.message }); }
   if (!rows.length) return sendJson(res, 400, { error: "the file has no questions" });
+  // `lines`: the 1-based lines chosen on the selection page; without it every line is asked.
+  try { rows = selectRows(rows, lines); } catch (err) { return sendJson(res, err.statusCode ?? 400, { error: err.message }); }
   run(model, rows); // runs in the background; progress is read through /api/status
   sendJson(res, 202, { total: rows.length });
+}
+
+/** The uploaded file as sessions and messages, for the selection page. */
+async function parse(req, res) {
+  const { jsonl } = await readJson(req);
+  let rows;
+  try { rows = parseJsonl(String(jsonl ?? "")); } catch (err) { return sendJson(res, 400, { error: err.message }); }
+  if (!rows.length) return sendJson(res, 400, { error: "the file has no questions" });
+  sendJson(res, 200, { sessions: previewSessions(rows) });
 }
 
 async function results(req, res, url) {
@@ -87,6 +98,7 @@ async function results(req, res, url) {
 
 const routes = {
   "GET /": home,
+  "GET /new": file("new.html", "text/html; charset=utf-8"),
   "GET /results": file("results.html", "text/html; charset=utf-8"),
   "GET /style.css": file("style.css", "text/css; charset=utf-8"),
   "GET /common.js": file("common.js", "text/javascript; charset=utf-8"),
@@ -96,6 +108,7 @@ const routes = {
   "GET /api/status": async (req, res) => sendJson(res, 200, { loggedIn: await checkLogin(), run: snapshot() }),
   "GET /api/models": async (req, res) => sendJson(res, 200, await listModels()),
   "POST /api/run": startRun,
+  "POST /api/parse": parse,
 };
 
 const server = http.createServer(async (req, res) => {

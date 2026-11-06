@@ -37,6 +37,7 @@ function resultFacts(r) {
     <span>proposals ${r.proposals ?? 0}</span>
     <span>cost $${Number(r.costUsd ?? 0).toFixed(4)}</span>
     <span class="mono">session ${esc(r.sessionId || "–")}</span>
+    ${r.attachments?.length ? `<span>attached ${esc(r.attachments.map((a) => `${a.fileName} (${Math.round(a.bytes / 1024)} KB)`).join(", "))}</span>` : ""}
   </div>`;
 }
 
@@ -52,6 +53,49 @@ function answerBody(m) {
 }
 
 const shortQuestion = (q) => esc(q.length > 120 ? q.slice(0, 120) + "…" : q);
+
+// CheckNet login in a pop-up, shared by the new-benchmark and progress pages.
+// Expects #login (section), #login-link and #login-note on the page.
+let loginOpened = false; // opened once each time the app becomes logged out
+
+/** Opens the login centred on this window. Returns false when the browser blocked it. */
+function openLogin() {
+  const w = 520, h = 700;
+  const left = Math.round(window.screenX + (window.outerWidth - w) / 2);
+  const top = Math.round(window.screenY + (window.outerHeight - h) / 2);
+  const popup = window.open("/login", "cnu-login", `popup,width=${w},height=${h},left=${left},top=${top}`);
+  if (popup) popup.focus();
+  return !!popup;
+}
+
+/**
+ * Shows or hides the login section for the current state. Logged out: opens the
+ * pop-up once (a browser may block one not opened from a click, so the button stays).
+ */
+function showLogin(loggedIn) {
+  $("login").hidden = loggedIn;
+  if (loggedIn) { loginOpened = false; return; }
+  if (loginOpened) return;
+  loginOpened = true;
+  $("login-note").textContent = openLogin()
+    ? "The login window is open. Sign in there with your QA account."
+    : "Your browser blocked the login window. Use Log in to open it.";
+}
+
+/** Wires the Log in button and the pop-up's "done" message; `onDone` re-checks the state. */
+function setupLogin(onDone) {
+  $("login-link").addEventListener("click", (e) => {
+    if (openLogin()) {
+      e.preventDefault();
+      $("login-note").textContent = "The login window is open. Sign in there with your QA account.";
+    } // blocked: let the link log in in this tab instead
+  });
+  window.addEventListener("message", (e) => {
+    if (e.origin !== location.origin || e.data?.type !== "login-done") return;
+    $("login-note").textContent = e.data.error ? `Login failed: ${e.data.error}` : "";
+    onDone();
+  });
+}
 
 // toggle does not bubble, so listen in the capture phase.
 document.addEventListener("toggle", (e) => {

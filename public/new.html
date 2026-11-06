@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>New Benchmark</title>
+  <link rel="stylesheet" href="/style.css">
+  <style>
+    .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+    .toolbar button { margin-top: 0; }
+    .toolbar button.plain { background: none; color: var(--accent); padding: 4px 0; }
+    .toolbar input[type=search] { flex: 1; min-width: 180px; font: inherit; padding: 6px 8px; }
+    .pick { display: flex; gap: 8px; align-items: flex-start; }
+    .pick > input { margin-top: 5px; flex: none; }
+    .pick > details, .pick > div { flex: 1; min-width: 0; }
+    .messages { margin: 4px 0 4px 24px; }
+    .message { border-top: 1px solid var(--border); padding: 6px 0; }
+    .badge { display: inline-block; font-size: 12px; padding: 0 6px; margin-left: 4px; border: 1px solid var(--border); border-radius: 10px; color: var(--muted); font-weight: normal; }
+    .badge.file { color: var(--accent); border-color: var(--accent); }
+    .badge.label { color: var(--ok); border-color: var(--ok); }
+    .gap { color: var(--run); font-size: 13px; }
+    #start-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; }
+  </style>
+</head>
+<body>
+<main>
+  <header><h1>New benchmark</h1><nav><a href="/">Progress</a> · <a href="/results">Results</a></nav></header>
+
+  <section id="login" hidden>
+    <p>Sign in with your CheckNet account. The benchmark calls the agent, and through it the Back Office, with your login.</p>
+    <a class="button" id="login-link" href="/login">Log in</a>
+    <p id="login-note" class="muted"></p>
+  </section>
+
+  <section>
+    <label for="file">Questions (.jsonl)</label>
+    <input id="file" type="file" accept=".jsonl,.json,.txt">
+    <label for="model">Model</label>
+    <select id="model"><option value="">Loading models…</option></select>
+    <div id="start-row">
+      <button id="start" disabled>Start benchmark</button>
+      <span id="count" class="muted"></span>
+    </div>
+    <p id="message" class="muted"></p>
+  </section>
+
+  <section id="select-box" hidden>
+    <h2>Sessions and messages</h2>
+    <p class="muted">Everything is selected after loading. Untick what you don't want to ask; unticked messages are left out of the run.</p>
+    <div class="toolbar">
+      <button class="plain" id="all">Select all</button>
+      <button class="plain" id="none">Select none</button>
+      <input id="filter" type="search" placeholder="Filter on question or answer text, file name or label id">
+    </div>
+    <div id="sessions"></div>
+  </section>
+</main>
+<script src="/common.js"></script>
+<script>
+  let jsonl = "", sessions = [], loggedIn = false, running = false;
+  const selected = new Set(); // 1-based input lines
+
+  const allMessages = () => sessions.flatMap((s) => s.messages);
+  const matches = (m, text) => !text || [m.question, m.answer, ...m.files, ...m.labelIds.map((l) => `label ${l}`)]
+    .some((v) => String(v ?? "").toLowerCase().includes(text));
+  const filterText = () => $("filter").value.trim().toLowerCase();
+  const shown = () => allMessages().filter((m) => matches(m, filterText()));
+  const day = (iso) => iso ? iso.slice(0, 10) : "";
+
+  function badges(m) {
+    return [
+      ...m.files.map((f) => `<span class="badge file" title="Sent with this file; it is fetched from the QA session">file: ${esc(f)}</span>`),
+      m.labelizer ? `<span class="badge label">labelizer generation</span>` : "",
+      ...m.labelIds.map((l) => `<span class="badge label">label ${esc(l)}</span>`),
+      m.needsMirror ? `<span class="badge" title="Needs the repo mirror (plugin code, FDS, Layout Designer manual)">needs mirror</span>` : "",
+    ].join("");
+  }
+
+  // A ticked message whose earlier turns are unticked is asked without them.
+  function gapNote(s, i) {
+    const missing = s.messages.slice(0, i).map((m, j) => (selected.has(m.line) ? null : j + 1)).filter(Boolean);
+    if (!selected.has(s.messages[i].line) || !missing.length) return "";
+    return `<div class="gap">Asked without turn${missing.length > 1 ? "s" : ""} ${missing.join(", ")}: the agent lacks that context.</div>`;
+  }
+
+  function render() {
+    const text = filterText();
+    $("sessions").innerHTML = sessions.map((s, si) => {
+      const visible = s.messages.map((m, i) => ({ m, i })).filter(({ m }) => matches(m, text));
+      if (!visible.length) return "";
+      const ticked = s.messages.filter((m) => selected.has(m.line)).length;
+      const dates = [...new Set(s.messages.map((m) => day(m.askedAt)).filter(Boolean))].sort();
+      const flags = [...new Set(s.messages.flatMap((m) => [...m.files.map(() => "file"), ...(m.labelizer || m.labelIds.length ? ["label"] : [])]))];
+      const summary = `${esc(s.label.slice(0, 8))} <span class="stats">· ${s.messages.length} message${s.messages.length === 1 ? "" : "s"}`
+        + `${dates.length ? ` · ${dates[0]}${dates.length > 1 ? ` to ${dates.at(-1)}` : ""}` : ""} · ${ticked} selected`
+        + `${flags.includes("file") ? ` · <span class="badge file">file</span>` : ""}${flags.includes("label") ? ` · <span class="badge label">label</span>` : ""}`
+        + `</span><div class="muted">${shortQuestion(s.messages[0].question)}</div>`;
+      const rows = visible.map(({ m, i }) => `<div class="message pick">
+          <input type="checkbox" data-line="${m.line}" ${selected.has(m.line) ? "checked" : ""} aria-label="Ask message ${i + 1}">
+          ${details(`m${m.line}`, `<strong>${i + 1}.</strong> ${shortQuestion(m.question)}${badges(m)}`,
+            `<div class="muted">Question <span class="mono">(line ${m.line}${m.askedAt ? `, asked ${esc(m.askedAt)}` : ""})</span></div><pre>${esc(m.question)}</pre>
+             <div class="muted">Expected</div><pre>${esc(m.answer || "(none)")}</pre>`)}
+        </div>${gapNote(s, i)}`).join("");
+      return `<div class="session pick">
+          <input type="checkbox" data-session="${si}" ${ticked === s.messages.length ? "checked" : ""} aria-label="Ask session ${esc(s.label)}">
+          ${details(`s${si}`, summary, `<div class="messages">${rows}</div>`)}
+        </div>`;
+    }).join("") || `<p class="muted">No message matches the filter.</p>`;
+    // A partly selected session shows the mixed state.
+    for (const box of $("sessions").querySelectorAll("input[data-session]")) {
+      const s = sessions[box.dataset.session];
+      const ticked = s.messages.filter((m) => selected.has(m.line)).length;
+      box.indeterminate = ticked > 0 && ticked < s.messages.length;
+    }
+    updateStart();
+  }
+
+  function updateStart() {
+    const msgs = allMessages().filter((m) => selected.has(m.line));
+    const inSessions = sessions.filter((s) => s.messages.some((m) => selected.has(m.line))).length;
+    $("count").textContent = sessions.length
+      ? `${msgs.length} of ${allMessages().length} messages in ${inSessions} session${inSessions === 1 ? "" : "s"} selected` : "";
+    $("start").disabled = !loggedIn || running || !msgs.length || !$("model").value;
+    $("start").title = !loggedIn ? "Log in first" : running ? "A benchmark is already running" : "";
+  }
+
+  $("sessions").addEventListener("change", (e) => {
+    const box = e.target;
+    if (box.dataset.line) {
+      const line = Number(box.dataset.line);
+      box.checked ? selected.add(line) : selected.delete(line);
+    } else if (box.dataset.session) {
+      // A session box ticks or clears all its messages, shown or not.
+      for (const m of sessions[box.dataset.session].messages) box.checked ? selected.add(m.line) : selected.delete(m.line);
+    }
+    render();
+  });
+
+  // With a filter, Select all / none apply to the messages it shows.
+  $("all").addEventListener("click", () => { shown().forEach((m) => selected.add(m.line)); render(); });
+  $("none").addEventListener("click", () => { shown().forEach((m) => selected.delete(m.line)); render(); });
+  $("filter").addEventListener("input", () => {
+    const filtered = !!filterText();
+    $("all").textContent = filtered ? "Select shown" : "Select all";
+    $("none").textContent = filtered ? "Clear shown" : "Select none";
+    render();
+  });
+
+  $("file").addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    $("message").textContent = "";
+    jsonl = file ? await file.text() : "";
+    sessions = [];
+    selected.clear();
+    open.clear();
+    if (jsonl) {
+      try {
+        ({ sessions } = await api("/api/parse", {
+          method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonl }),
+        }));
+        allMessages().forEach((m) => selected.add(m.line));
+      } catch (err) {
+        $("message").textContent = err.message;
+      }
+    }
+    $("select-box").hidden = !sessions.length;
+    render();
+  });
+
+  async function loadModels() {
+    try {
+      const models = await api("/api/models");
+      $("model").replaceChildren(new Option("Choose a model", ""), ...models.map((m) => new Option(m, m)));
+    } catch (err) {
+      $("model").replaceChildren(new Option("Could not load models", ""));
+      $("message").textContent = err.message;
+    }
+    updateStart();
+  }
+  $("model").addEventListener("change", updateStart);
+
+  $("start").addEventListener("click", async () => {
+    $("message").textContent = "";
+    const lines = allMessages().filter((m) => selected.has(m.line)).map((m) => m.line);
+    try {
+      await api("/api/run", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: $("model").value, jsonl, lines }),
+      });
+      location.href = "/";
+    } catch (err) {
+      $("message").textContent = err.message;
+    }
+  });
+
+  async function poll() {
+    try {
+      const status = await api("/api/status");
+      loggedIn = status.loggedIn;
+      running = ["starting agent", "running"].includes(status.run.state);
+      showLogin(loggedIn);
+      if (running) $("message").textContent = "A benchmark is running. You can prepare the next one; Start works once it has finished.";
+      else if ($("message").textContent.startsWith("A benchmark is running")) $("message").textContent = "";
+      updateStart();
+    } catch (err) {
+      $("message").textContent = err.message;
+    }
+  }
+
+  setupLogin(() => poll());
+  loadModels();
+  poll();
+  setInterval(poll, 5000);
+</script>
+</body>
+</html>
