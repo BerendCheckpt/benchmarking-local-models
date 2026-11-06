@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseJsonl, previewSessions, selectRows } from "../benchmark.mjs";
+import { parseJsonl, previewSessions } from "../benchmark.mjs";
 import { matchByLine } from "../.claude/skills/benchmark-report/scripts/match.mjs";
 import { collectLabels, feedbackSummary, labelFacts, labelsMarkdown, pdfMatch, Pseudonyms } from "../.claude/skills/benchmark-report/scripts/label-ri.mjs";
 import { assemble } from "../.claude/skills/benchmark-report/scripts/assemble-report.mjs";
@@ -27,15 +27,6 @@ test("previewSessions groups the file and marks files, labelizer and label ids",
   assert.equal(fix.labelizer, false);
   assert.deepEqual(fix.files, ["shot.pdf"]);
   assert.equal(sessions[0].messages[0].askedAt, "2026-11-04T09:00:00Z");
-});
-
-test("selectRows keeps the chosen lines in file order and refuses bad selections", () => {
-  const rows = parseJsonl(file);
-  assert.equal(selectRows(rows, undefined).length, 4);
-  assert.deepEqual(selectRows(rows, [4, 2]).map((r) => r.line), [2, 4]);
-  assert.throws(() => selectRows(rows, []), (e) => e.statusCode === 400);
-  assert.throws(() => selectRows(rows, ["2"]), (e) => e.statusCode === 400);
-  assert.throws(() => selectRows(rows, [9]), /no question on line 9/);
 });
 
 test("matchByLine matches a selection run to its file by input_line", () => {

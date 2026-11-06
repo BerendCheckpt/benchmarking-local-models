@@ -1,11 +1,15 @@
 // Postgres access. Connection settings come from the standard PG* env vars.
 import pg from "pg";
+import { ExportsRepository } from "./exports.mjs";
 
 const TABLE = "benchmark_results.rsults";
 const pool = new pg.Pool();
 // An idle connection dropped by the server is emitted here; without a listener
 // Node treats it as unhandled and the whole app exits. The next query reconnects.
 pool.on("error", (err) => console.error(`[db] idle connection lost: ${err.message}`));
+
+/** The stored messages a run is chosen from. */
+export const exportsRepo = new ExportsRepository(pool);
 
 export async function ensureSchema() {
   // A fresh database (the spark stack's own Postgres) has neither; the n8n one
@@ -33,18 +37,20 @@ export async function ensureSchema() {
     ADD COLUMN IF NOT EXISTS skip_reason text NOT NULL DEFAULT '',
     ADD COLUMN IF NOT EXISTS context_recap boolean NOT NULL DEFAULT false,
     ADD COLUMN IF NOT EXISTS attachments jsonb,
-    ADD COLUMN IF NOT EXISTS input_line int`);
+    ADD COLUMN IF NOT EXISTS input_line int,
+    ADD COLUMN IF NOT EXISTS export_id uuid`);
+  await exportsRepo.ensure();
 }
 
 export async function insertResult(r, model, runId) {
   await pool.query(
     `INSERT INTO ${TABLE}
        (run_id, prompt, expected_answer, latency_ms, ok, reply, error, "sessionId",
-        "costUsd", turns, tools, "toolCalls", proposals, "deltaChars", model, token_limit, skip_reason, context_recap, attachments, input_line)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
+        "costUsd", turns, tools, "toolCalls", proposals, "deltaChars", model, token_limit, skip_reason, context_recap, attachments, input_line, export_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
     [runId, r.prompt, r.expected_answer, r.latency_ms, r.ok, r.reply, r.error || null, r.sessionId,
       r.costUsd, r.turns, r.tools, r.toolCalls, r.proposals, r.deltaChars, model, !!r.tokenLimit, r.skipReason ?? "", !!r.contextRecap,
-      r.attachments?.length ? JSON.stringify(r.attachments) : null, r.inputLine ?? null],
+      r.attachments?.length ? JSON.stringify(r.attachments) : null, r.inputLine ?? null, r.exportId ?? null],
   );
 }
 

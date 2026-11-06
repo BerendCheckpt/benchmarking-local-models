@@ -37,28 +37,15 @@ export function needsMirror(row) {
 }
 
 /**
- * The rows on the given 1-based input lines, in file order. Without `lines`
- * every row is kept. Throws a 400 for an empty or unknown selection.
- */
-export function selectRows(rows, lines) {
-  if (lines === undefined || lines === null) return rows;
-  const bad = () => Object.assign(new Error("lines must be a non-empty list of line numbers from the file"), { statusCode: 400 });
-  if (!Array.isArray(lines) || !lines.length || !lines.every(Number.isInteger)) throw bad();
-  const wanted = new Set(lines);
-  const known = new Set(rows.map((r) => r.line));
-  const unknown = [...wanted].filter((l) => !known.has(l));
-  if (unknown.length) throw Object.assign(new Error(`no question on line ${unknown.join(", ")}`), { statusCode: 400 });
-  return rows.filter((r) => wanted.has(r.line));
-}
-
-/**
- * The file as the selection page shows it: sessions with their messages and
- * hints for choosing (files, labelizer generation, label ids, mirror).
+ * The messages as the selection page shows them: sessions with their messages and
+ * hints for choosing (files, labelizer generation, label ids, mirror). Stored
+ * messages also carry their id, and `context` for an earlier turn before the range.
  */
 export function previewSessions(rows) {
   return groupBySession(rows).map((group, i) => ({
     label: group[0].session ?? `(no session) #${i + 1}`,
     messages: group.map((r) => ({
+      ...(r.id ? { id: r.id, context: !!r.context } : {}),
       line: r.line, question: r.question, answer: r.answer, askedAt: r.askedAt,
       needsMirror: needsMirror(r),
       files: attachmentRefs(r.question).map((f) => f.name),
@@ -222,7 +209,7 @@ export function markAborted(sessions, error) {
 // One question: ask, show the result, then save it. The page is updated before
 // the insert so a database outage cannot lose an answer that took minutes.
 // `question` is what the agent gets; `prompt` is the input line as saved (the report matches rows to it).
-async function answerOne({ view, s, m, of, question, prompt = question, attachments = [], answer, line = null, sessionId, history, model, runId }) {
+async function answerOne({ view, s, m, of, question, prompt = question, attachments = [], answer, line = null, exportId = null, sessionId, history, model, runId }) {
   const started = Date.now();
   // A generation call goes to /from-pdf: no agent session, no recap, and the conversation's session is left as it was.
   const generation = isLabelizerGeneration(question);
@@ -245,7 +232,7 @@ async function answerOne({ view, s, m, of, question, prompt = question, attachme
   if (state === "failed") status.failures++;
   if (state === "token-limit") status.tokenLimits++;
 
-  const row = { ...result, sessionId: usedSessionId, prompt, expected_answer: answer, latency_ms, contextRecap, attachments: files, inputLine: line };
+  const row = { ...result, sessionId: usedSessionId, prompt, expected_answer: answer, latency_ms, contextRecap, attachments: files, inputLine: line, exportId };
   try {
     await withRetry(() => insertResult(row, model, runId));
   } catch (err) {
@@ -259,7 +246,7 @@ async function answerOne({ view, s, m, of, question, prompt = question, attachme
 }
 
 /** Saves a message that was not asked, with the reason, so the run shows what it left out. */
-async function skipOne({ view, m, question, answer, line = null, sessionId: agentSession, model, runId, reason }) {
+async function skipOne({ view, m, question, answer, line = null, exportId = null, sessionId: agentSession, model, runId, reason }) {
   // No agent session yet: name it after the input session so skipped conversations stay apart.
   const sessionId = agentSession || `skipped:${view.label}`;
   Object.assign(view.messages[m], { state: "skipped", skipReason: reason, sessionId });
@@ -267,7 +254,7 @@ async function skipOne({ view, m, question, answer, line = null, sessionId: agen
   status.skipped++;
   const row = {
     ok: false, reply: "", error: "", tokenLimit: false, sessionId, costUsd: 0, turns: 0, tools: [], toolCalls: 0,
-    proposals: 0, deltaChars: 0, prompt: question, expected_answer: answer, latency_ms: 0, skipReason: reason, inputLine: line,
+    proposals: 0, deltaChars: 0, prompt: question, expected_answer: answer, latency_ms: 0, skipReason: reason, inputLine: line, exportId,
   };
   try {
     await withRetry(() => insertResult(row, model, runId));
@@ -321,9 +308,9 @@ export async function run(model, rows) {
       const skips = skipReasons(conversation, status.mirrorMissing);
       let sessionId = "";
       const history = []; // asked turns, for a recap if the session is lost
-      for (const [m, { question, answer, line }] of conversation.entries()) {
+      for (const [m, { question, answer, line, id: exportId }] of conversation.entries()) {
         if (skips[m]) {
-          await skipOne({ view, m, question, answer, line, sessionId, model, runId, reason: skips[m] });
+          await skipOne({ view, m, question, answer, line, exportId, sessionId, model, runId, reason: skips[m] });
           continue;
         }
         // Only a message that names a file goes to the QA host for it.
@@ -331,12 +318,12 @@ export async function run(model, rows) {
         const noPdf = isLabelizerGeneration(question) && !prepared.skip && !prepared.attachments.some(isPdf);
         if (prepared.skip || noPdf) {
           const reason = prepared.skip || "labelizer generation call without a PDF to send to /from-pdf";
-          await skipOne({ view, m, question, answer, line, sessionId, model, runId, reason });
+          await skipOne({ view, m, question, answer, line, exportId, sessionId, model, runId, reason });
           continue;
         }
         sessionId = await answerOne({
           view, s, m, of: conversation.length, question: prepared.question, prompt: question,
-          attachments: prepared.attachments, answer, line, sessionId, history, model, runId,
+          attachments: prepared.attachments, answer, line, exportId, sessionId, history, model, runId,
         });
       }
     }

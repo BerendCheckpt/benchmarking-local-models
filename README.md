@@ -191,8 +191,19 @@ JSON Lines: one JSON object per line. Blank lines are skipped.
 `hanuman-qa-2026-10-29.tagged.jsonl` is the 10-29 file with `needs` filled in
 from the run 1793258147 report: 73 of its 232 questions need the mirror.
 
-Extra fields (such as `askedAt`) are ignored. Unlike the n8n flow, sessions with
-fewer than 3 messages are not skipped.
+| `askedAt` | no | When the question was asked in QA (ISO). The date range on `/new` picks messages by it; a line without it is stored, but no range picks it |
+
+Other fields are ignored. Unlike the n8n flow, sessions with fewer than 3 messages
+are not skipped.
+
+### Stored messages (`benchmark_results.hanuman_exports`)
+
+An uploaded file is stored line by line in `benchmark_results.hanuman_exports`, in
+the app's Postgres. The app creates the table at start-up. Each message gets a
+UUID. A line already stored (the same `session`, `askedAt` and `question`; a line
+with neither a session nor a date counts by `question` and `answer`) is skipped, so
+uploading the same file, or an overlapping one, again only adds what is new. Each
+result row keeps the message it answered in `export_id`.
 
 ### Messages that had a file
 
@@ -226,9 +237,16 @@ sha256).
 You start a benchmark here:
 
 1. **Log in** with your CheckNet account. The agent calls the Back Office with it.
-2. **Choose the questions file.** It's checked and shown as sessions with their
-   messages. Everything is selected at first.
-3. **Choose what to ask.**
+2. **Upload questions** when there are new ones: choose a JSONL file and press
+   **Upload**. The page says how many were new and how many were already stored.
+   If a range is already shown, it is loaded again with the new messages ticked
+   and your other ticks kept.
+3. **Pick a date-time range** (your local time; the last 7 days to start with) and
+   press **Show**. You see every stored message asked in that range, as sessions.
+   A session that started before the range also brings its earlier turns, marked
+   `context`, so later questions are asked with their session's context. Everything
+   is selected at first.
+4. **Choose what to ask.**
    - Tick or untick whole sessions or single messages. Expand a session to read its
      messages, and a message to read the full question and the expected answer.
    - Badges help you choose: `file: <name>` (the file is fetched from the QA
@@ -237,11 +255,15 @@ You start a benchmark here:
      shown* and *Clear shown* change only the messages it shows.
    - A ticked message whose earlier turns are unticked gets a note: it's asked
      without those turns, so the agent lacks their context.
-4. **Choose the model** and **start**. Only the ticked messages are asked, in file
-   order and per session, and each saved row keeps its line in the file
-   (`input_line`). The page then switches to the progress page.
+5. **Choose the model** and **start**. Only the ticked messages are asked, per
+   session, in the order they were asked in QA, and each saved row keeps its message
+   id (`export_id`). The page then switches to the progress page.
 
-`POST /api/run` without `lines` still asks every line.
+The session context works as before: the first answer's agent session carries the
+rest of that conversation.
+
+API: `POST /api/exports {jsonl}` stores a file, `GET /api/exports?from=&to=` lists a
+range, and `POST /api/run {model, ids}` starts a run with the chosen message ids.
 
 ## Progress page
 
@@ -522,7 +544,8 @@ npm test
 
 | File | Role |
 |---|---|
-| `server.mjs` | HTTP server: page, OAuth callback, `/login`, `/api/status`, `/api/models`, `/api/run` |
+| `server.mjs` | HTTP server: page, OAuth callback, `/login`, `/api/status`, `/api/models`, `/api/exports`, `/api/run` |
+| `exports.mjs` | `ExportsRepository`: stored messages (upload without duplicates, date range, chosen ids) |
 | `oauth.mjs` | PKCE login, token exchange and refresh, token file |
 | `ollama.mjs` | `ollama list` over SSH |
 | `docker.mjs` | Minimal Docker Engine API client over the socket |

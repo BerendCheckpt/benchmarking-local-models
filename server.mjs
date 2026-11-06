@@ -2,8 +2,8 @@
 // Listens on PORT, which must match the port in the registered redirect URI.
 import http from "node:http";
 import { readFile } from "node:fs/promises";
-import { parseJsonl, previewSessions, run, selectRows, snapshot, status } from "./benchmark.mjs";
-import { ensureSchema, listResultModels, queryResults } from "./db.mjs";
+import { parseJsonl, previewSessions, run, snapshot, status } from "./benchmark.mjs";
+import { ensureSchema, exportsRepo, listResultModels, queryResults } from "./db.mjs";
 import { listModels } from "./ollama.mjs";
 import { checkLogin, handleCallback, isLoggedIn, loginUrl } from "./oauth.mjs";
 import { groupRuns, parseResultFilters } from "./results.mjs";
@@ -70,23 +70,26 @@ async function home(req, res, url) {
 async function startRun(req, res) {
   if (!isLoggedIn()) return sendJson(res, 401, { error: "log in first" });
   if (["starting agent", "running"].includes(status.state)) return sendJson(res, 409, { error: "a benchmark is already running" });
-  const { model, jsonl, lines } = await readJson(req);
+  const { model, ids } = await readJson(req);
   if (typeof model !== "string" || !model) return sendJson(res, 400, { error: "model required" });
-  let rows;
-  try { rows = parseJsonl(String(jsonl ?? "")); } catch (err) { return sendJson(res, 400, { error: err.message }); }
-  if (!rows.length) return sendJson(res, 400, { error: "the file has no questions" });
-  // `lines`: the 1-based lines chosen on the selection page; without it every line is asked.
-  try { rows = selectRows(rows, lines); } catch (err) { return sendJson(res, err.statusCode ?? 400, { error: err.message }); }
+  // `ids`: the stored messages chosen on the selection page, asked in session order.
+  const rows = await exportsRepo.findByIds(ids);
   run(model, rows); // runs in the background; progress is read through /api/status
   sendJson(res, 202, { total: rows.length });
 }
 
-/** The uploaded file as sessions and messages, for the selection page. */
-async function parse(req, res) {
+/** Stores an uploaded JSONL file's messages; ones already stored are left alone. */
+async function uploadExports(req, res) {
   const { jsonl } = await readJson(req);
   let rows;
   try { rows = parseJsonl(String(jsonl ?? "")); } catch (err) { return sendJson(res, 400, { error: err.message }); }
   if (!rows.length) return sendJson(res, 400, { error: "the file has no questions" });
+  sendJson(res, 200, await exportsRepo.insertMany(rows));
+}
+
+/** The stored messages asked in [from, to), with their sessions' earlier turns, for the selection page. */
+async function listExports(req, res, url) {
+  const rows = await exportsRepo.findRange(url.searchParams.get("from"), url.searchParams.get("to"));
   sendJson(res, 200, { sessions: previewSessions(rows) });
 }
 
@@ -108,7 +111,8 @@ const routes = {
   "GET /api/status": async (req, res) => sendJson(res, 200, { loggedIn: await checkLogin(), run: snapshot() }),
   "GET /api/models": async (req, res) => sendJson(res, 200, await listModels()),
   "POST /api/run": startRun,
-  "POST /api/parse": parse,
+  "GET /api/exports": listExports,
+  "POST /api/exports": uploadExports,
 };
 
 const server = http.createServer(async (req, res) => {
