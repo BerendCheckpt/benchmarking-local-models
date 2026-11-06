@@ -103,11 +103,15 @@ export function generationIds(question) {
 
 export const isPdf = (file) => file.contentType === "application/pdf" || /\.pdf$/i.test(file.fileName ?? "");
 
-/** Every engine object in a template (`$type` …Template.Objects.X), at any depth: its short type names. */
+/**
+ * Every engine object in a template, at any depth: its short type names. An object's
+ * `$type` ends in `…Object`, in more than one namespace (`…Template.Objects.TextObject`,
+ * `…Engine.EAN13Object`, `…Engine.QRObject`), sometimes with an assembly after a comma.
+ */
 function objectTypes(node, types = []) {
   if (Array.isArray(node)) node.forEach((n) => objectTypes(n, types));
   else if (node && typeof node === "object") {
-    const m = /\.Objects\.(\w+)$/.exec(node.$type ?? "");
+    const m = /(?:^|\.)(\w+Object)$/.exec(String(node.$type ?? "").split(",")[0].trim());
     if (m) types.push(m[1]);
     Object.values(node).forEach((v) => objectTypes(v, types));
   }
@@ -144,7 +148,8 @@ export async function generate(question, attachments, post = postFromPdf) {
     const out = await post({ pdfBase64: pdf.dataBase64, filename: pdf.fileName, ...generationIds(question) });
     return { ...NO_RESULT, ok: true, reply: generationReply(out) };
   } catch (err) {
-    return { ...NO_RESULT, error: err.message };
+    // As in agent.mjs for /chat: the job gave up once one response passed the output token maximum.
+    return { ...NO_RESULT, error: err.message, tokenLimit: /output token maximum/i.test(err.message) };
   }
 }
 
