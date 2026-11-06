@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Benchmark Viewer</title>
+  <style>
+    :root { --bg: #fafafa; --fg: #1a1a1a; --muted: #666; --card: #fff; --border: #ddd; --accent: #2563eb; --ok: #15803d; --bad: #b91c1c; --run: #b45309; --code: #f3f4f6; }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #111; --fg: #eee; --muted: #999; --card: #1b1b1b; --border: #333; --accent: #60a5fa; --ok: #4ade80; --bad: #f87171; --run: #fbbf24; --code: #262626; }
+    }
+    body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; }
+    main { max-width: 1100px; margin: 24px auto; padding: 0 16px; }
+    header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+    h1 { font-size: 22px; margin: 0 0 12px; }
+    h2 { font-size: 16px; margin: 0 0 8px; }
+    section { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+    label { display: block; margin: 0 0 4px; font-weight: 600; }
+    input, select { font: inherit; box-sizing: border-box; }
+    input[type=file] { width: 100%; }
+    pre { white-space: pre-wrap; word-break: break-word; background: var(--code); padding: 8px; border-radius: 6px; margin: 4px 0 8px; max-height: 320px; overflow: auto; font: 13px/1.45 ui-monospace, monospace; }
+    details > summary { cursor: pointer; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { text-align: left; padding: 6px 8px; border-top: 1px solid var(--border); vertical-align: top; }
+    th { color: var(--muted); font-weight: 600; }
+    .tabs { display: flex; gap: 4px; }
+    .tabs button { font: inherit; padding: 6px 14px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: var(--fg); cursor: pointer; }
+    .tabs button[aria-selected=true] { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .toolbar { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px 12px; margin: 8px 0; }
+    .toolbar input, .toolbar select { width: 100%; padding: 5px 8px; }
+    .session { border-top: 1px solid var(--border); padding: 8px 0; }
+    .session > details > summary { font-weight: 600; }
+    .messages { margin: 4px 0 4px 16px; }
+    .message { border-top: 1px solid var(--border); padding: 6px 0; }
+    .stats, .muted { color: var(--muted); font-weight: normal; }
+    .facts { display: flex; flex-wrap: wrap; gap: 4px 16px; color: var(--muted); font-size: 14px; }
+    .facts b { color: var(--fg); }
+    .mono { font-family: ui-monospace, monospace; font-size: 13px; }
+    .badge { display: inline-block; font-size: 12px; padding: 0 6px; margin-left: 4px; border: 1px solid var(--border); border-radius: 10px; color: var(--muted); font-weight: normal; }
+    .badge.file { color: var(--accent); border-color: var(--accent); }
+    .badge.label { color: var(--ok); border-color: var(--ok); }
+    .score { font-weight: 700; }
+    .s3 { color: var(--ok); } .s2 { color: var(--accent); } .s1 { color: var(--run); } .s0 { color: var(--bad); }
+    .error { color: var(--bad); }
+    .drop { border: 2px dashed var(--border); border-radius: 8px; padding: 12px; }
+    .drop.over { border-color: var(--accent); }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Benchmark viewer</h1>
+    <nav class="tabs" role="tablist">
+      <button role="tab" id="tab-jsonl" aria-selected="true">Questions (JSONL)</button>
+      <button role="tab" id="tab-results" aria-selected="false">Results</button>
+    </nav>
+  </header>
+
+  <div id="pane-jsonl">
+    <section>
+      <div class="drop" id="drop">
+        <label for="file">Questions file (.jsonl)</label>
+        <input id="file" type="file" accept=".jsonl,.json,.txt">
+        <p class="muted">The file is read in this browser only. It is never uploaded or stored.</p>
+      </div>
+      <p id="jsonl-message" class="error"></p>
+    </section>
+    <section id="jsonl-box" hidden>
+      <h2 id="jsonl-count"></h2>
+      <div class="toolbar"><input id="jsonl-filter" type="search" placeholder="Filter on question or answer text, file name or label id"></div>
+      <div id="sessions"></div>
+    </section>
+  </div>
+
+  <div id="pane-results" hidden>
+    <section>
+      <label for="report">Report</label>
+      <select id="report"><option value="">Loading reports…</option></select>
+      <p id="results-message" class="error"></p>
+    </section>
+    <section id="results-box" hidden>
+      <div id="run-facts"></div>
+      <div class="toolbar">
+        <input id="r-text" type="search" placeholder="Filter on text">
+        <select id="r-score"><option value="">Any score</option><option>3</option><option>2</option><option>1</option><option>0</option></select>
+        <select id="r-outcome"><option value="">Any outcome</option></select>
+        <select id="r-category"><option value="">Any question type</option></select>
+      </div>
+      <div id="results"></div>
+    </section>
+  </div>
+</main>
+
+<!-- The parsing and badge rules of the benchmark app (benchmark.mjs, qa-sessions.mjs,
+     labels.mjs), copied. test/viewer.test.mjs runs this block and checks it gives the
+     same sessions and badges as the app, so keep the two in step. -->
+<script id="rules">
+  /** Parses JSON Lines rows of `{ session, question, answer, needs? }` (benchmark.mjs parseJsonl). */
+  function parseJsonl(text) {
+    return text.split(/\r?\n/).flatMap((line, i) => {
+      if (!line.trim()) return [];
+      let row;
+      try { row = JSON.parse(line); } catch { throw new Error(`line ${i + 1}: not valid JSON`); }
+      if (typeof row?.question !== "string" || !row.question.trim()) throw new Error(`line ${i + 1}: "question" missing`);
+      if (row.needs !== undefined && !(Array.isArray(row.needs) && row.needs.every((n) => typeof n === "string"))) {
+        throw new Error(`line ${i + 1}: "needs" must be a list of strings`);
+      }
+      return [{
+        session: row.session ?? null, question: row.question, answer: row.answer ?? "", needs: row.needs ?? null,
+        askedAt: typeof row.askedAt === "string" ? row.askedAt : null, line: i + 1,
+      }];
+    });
+  }
+
+  const MIRROR_WORDS = /\b(fds|source code|plugin.{0,12}(code|logic)|(import|export) (logic|process|plugin)|implemented|business rules?|layout designer)\b/i;
+  function needsMirror(row) {
+    return row.needs ? row.needs.includes("mirror") : MIRROR_WORDS.test(row.question);
+  }
+
+  const PREAMBLE = /\n*The person attached \d+ files? to this message\. They are on disk and you can read them:\n((?:- .+\n?)+)(?:Read what you need from them before answering\.[^\n]*?sheet\.py\.)?/;
+  const INPUT_PDF = /^INPUT PDF: (.+)$/m;
+  function attachmentRefs(question) {
+    const refs = [];
+    const pre = PREAMBLE.exec(question);
+    if (pre) {
+      for (const line of pre[1].split("\n")) {
+        const m = /^- (.+) \(\d+ KB\) at (.+)$/.exec(line.trim());
+        if (m) refs.push({ name: m[1], path: m[2] });
+      }
+    }
+    const pdf = INPUT_PDF.exec(question);
+    if (pdf) refs.push({ name: pdf[1].trim().split("/").pop(), path: pdf[1].trim() });
+    return refs;
+  }
+
+  const GENERATION = /Target LabelId:\s*(\d+)/i;
+  const MENTION = /label\s*-?\s*id\s*:?\s*(\d+)/gi;
+  const isLabelizerGeneration = (question) => GENERATION.test(question ?? "");
+  function labelRefs(question) {
+    const generation = GENERATION.exec(question ?? "");
+    if (generation) return [{ labelId: generation[1], source: "generation" }];
+    const ids = new Set([...String(question ?? "").matchAll(MENTION)].map((m) => m[1]));
+    return [...ids].map((labelId) => ({ labelId, source: "question" }));
+  }
+
+  function groupBySession(rows) {
+    const groups = new Map();
+    rows.forEach((row, i) => {
+      const key = row.session ?? Symbol(i);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(row);
+    });
+    return [...groups.values()];
+  }
+
+  /** The file as the app's selection page shows it (benchmark.mjs previewSessions). */
+  function previewSessions(rows) {
+    return groupBySession(rows).map((group, i) => ({
+      label: group[0].session ?? `(no session) #${i + 1}`,
+      messages: group.map((r) => ({
+        line: r.line, question: r.question, answer: r.answer, askedAt: r.askedAt,
+        needsMirror: needsMirror(r),
+        files: attachmentRefs(r.question).map((f) => f.name),
+        labelizer: isLabelizerGeneration(r.question),
+        labelIds: labelRefs(r.question).map((l) => l.labelId),
+      })),
+    }));
+  }
+</script>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  const short = (q) => esc(String(q ?? "").length > 120 ? String(q).slice(0, 120) + "…" : q);
+  const day = (iso) => (iso ? String(iso).slice(0, 10) : "");
+  const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  // Expanded blocks stay open when the list re-renders after a filter change.
+  const opened = new Set();
+  const details = (key, summary, body) => `<details data-key="${esc(key)}"${opened.has(key) ? " open" : ""}><summary>${summary}</summary>${body}</details>`;
+  document.addEventListener("toggle", (e) => {
+    const key = e.target.dataset?.key;
+    if (key) e.target.open ? opened.add(key) : opened.delete(key);
+  }, true);
+
+  // ---- tabs ----
+  function show(tab) {
+    for (const t of ["jsonl", "results"]) {
+      $(`tab-${t}`).setAttribute("aria-selected", String(t === tab));
+      $(`pane-${t}`).hidden = t !== tab;
+    }
+    if (tab === "results" && !reportsListed) listReports();
+    history.replaceState(null, "", `#${tab}`);
+  }
+  $("tab-jsonl").onclick = () => show("jsonl");
+  $("tab-results").onclick = () => show("results");
+
+  // ---- Questions (JSONL): read in the browser only ----
+  let sessions = [];
+  const allMessages = () => sessions.flatMap((s) => s.messages);
+  const matches = (m, text) => !text || [m.question, m.answer, ...m.files, ...m.labelIds.map((l) => `label ${l}`)]
+    .some((v) => String(v ?? "").toLowerCase().includes(text));
+
+  function badges(m) {
+    return [
+      ...m.files.map((f) => `<span class="badge file" title="The asker attached this file">file: ${esc(f)}</span>`),
+      m.labelizer ? `<span class="badge label">labelizer generation</span>` : "",
+      ...m.labelIds.map((l) => `<span class="badge label">label ${esc(l)}</span>`),
+      m.needsMirror ? `<span class="badge" title="Needs the repo mirror (plugin code, FDS, Layout Designer manual)">needs mirror</span>` : "",
+    ].join("");
+  }
+
+  function renderJsonl() {
+    const text = $("jsonl-filter").value.trim().toLowerCase();
+    const msgs = allMessages();
+    const dates = [...new Set(msgs.map((m) => day(m.askedAt)).filter(Boolean))].sort();
+    $("jsonl-count").textContent = `${plural(msgs.length, "message")} in ${plural(sessions.length, "session")}`
+      + (dates.length ? `, asked ${dates[0]}${dates.length > 1 ? ` to ${dates.at(-1)}` : ""}` : "");
+    $("sessions").innerHTML = sessions.map((s, si) => {
+      const visible = s.messages.map((m, i) => ({ m, i })).filter(({ m }) => matches(m, text));
+      if (!visible.length) return "";
+      const sDates = [...new Set(s.messages.map((m) => day(m.askedAt)).filter(Boolean))].sort();
+      const summary = `${esc(s.label.slice(0, 8))} <span class="stats">· ${plural(s.messages.length, "message")}`
+        + `${sDates.length ? ` · ${sDates[0]}${sDates.length > 1 ? ` to ${sDates.at(-1)}` : ""}` : ""}</span>`
+        + `<div class="muted">${short(s.messages[0].question)}</div>`;
+      const rows = visible.map(({ m, i }) => `<div class="message">${details(`m${m.line}`,
+        `<strong>${i + 1}.</strong> ${short(m.question)}${badges(m)}`,
+        `<div class="muted">Question <span class="mono">(line ${m.line}${m.askedAt ? `, asked ${esc(m.askedAt)}` : ""})</span></div><pre>${esc(m.question)}</pre>
+         <div class="muted">Expected answer</div><pre>${esc(m.answer || "(none)")}</pre>`)}</div>`).join("");
+      return `<div class="session">${details(`s${si}`, summary, `<div class="messages">${rows}</div>`)}</div>`;
+    }).join("") || `<p class="muted">No message matches the filter.</p>`;
+  }
+
+  async function loadJsonl(file) {
+    $("jsonl-message").textContent = "";
+    sessions = [];
+    opened.clear();
+    if (file) {
+      try {
+        sessions = previewSessions(parseJsonl(await file.text()));
+      } catch (err) {
+        $("jsonl-message").textContent = `${file.name}: ${err.message}`;
+      }
+    }
+    $("jsonl-box").hidden = !sessions.length;
+    if (sessions.length) renderJsonl();
+  }
+  $("file").addEventListener("change", (e) => loadJsonl(e.target.files[0]));
+  $("jsonl-filter").addEventListener("input", renderJsonl);
+  const drop = $("drop");
+  drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
+  drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+  drop.addEventListener("drop", (e) => { e.preventDefault(); drop.classList.remove("over"); loadJsonl(e.dataTransfer.files[0]); });
+
+  // ---- Results: the reports uploaded to the server's reports/ folder ----
+  let reportsListed = false, report = null;
+
+  async function listReports() {
+    reportsListed = true;
+    $("results-message").textContent = "";
+    try {
+      const res = await fetch("reports/", { cache: "no-store" });
+      if (!res.ok) throw new Error(`could not list the reports (HTTP ${res.status})`);
+      const files = (await res.json()).filter((f) => f.type === "file" && f.name.endsWith(".viewer.json"))
+        .sort((a, b) => Date.parse(b.mtime) - Date.parse(a.mtime)); // newest upload first
+      $("report").replaceChildren(new Option(files.length ? "Choose a report" : "No reports uploaded yet", ""),
+        ...files.map((f) => new Option(`${f.name.replace(/\.viewer\.json$/, "")} (uploaded ${day(new Date(f.mtime).toISOString())})`, f.name)));
+    } catch (err) {
+      $("report").replaceChildren(new Option("No reports available", ""));
+      $("results-message").textContent = err.message;
+    }
+  }
+
+  $("report").addEventListener("change", async (e) => {
+    $("results-message").textContent = "";
+    report = null;
+    $("results-box").hidden = true;
+    if (!e.target.value) return;
+    try {
+      const res = await fetch(`reports/${encodeURIComponent(e.target.value)}`, { cache: "no-store" });
+      if (!res.ok) throw new Error(`could not load the report (HTTP ${res.status})`);
+      report = await res.json();
+      opened.clear();
+      fillFilters();
+      $("results-box").hidden = false;
+      renderResults();
+    } catch (err) {
+      $("results-message").textContent = err.message;
+    }
+  });
+
+  function fillFilters() {
+    const uniq = (f) => [...new Set(report.rows.map(f).filter(Boolean))].sort();
+    $("r-outcome").replaceChildren(new Option("Any outcome", ""), ...uniq((r) => r.outcome).map((v) => new Option(v, v)));
+    $("r-category").replaceChildren(new Option("Any question type", ""), ...uniq((r) => r.category).map((v) => new Option(v, v)));
+  }
+
+  function runFacts() {
+    const { run, summary } = report;
+    const runs = run.runs ?? [run];
+    const lines = runs.map((r) => `<div class="facts">
+      <span>Run <b>${esc(r.runId)}</b></span><span>Model <b>${esc(r.model)}</b></span>
+      <span>Input <b>${esc(String(r.input ?? "–").split(/[\\/]/).pop())}</b></span>
+      <span>${esc(day(r.from))} to ${esc(day(r.to))}</span>
+      ${r.selection ? `<span>${r.selection.asked} of ${r.selection.of} messages, chosen by hand</span>` : ""}</div>`).join("");
+    const outcomes = Object.entries(summary.outcomes ?? {}).map(([k, n]) => `${esc(k)} ${n}`).join(" · ");
+    return `${lines}<div class="facts"><span>Weighted score <b>${esc(summary.weighted)}</b></span>
+      <span>Mean <b>${esc(summary.mean)}</b> of 3</span><span>${plural(summary.messages, "message")}, ${summary.skipped} skipped</span>
+      <span>${outcomes}</span></div>`;
+  }
+
+  function renderResults() {
+    $("run-facts").innerHTML = runFacts();
+    const text = $("r-text").value.trim().toLowerCase();
+    const score = $("r-score").value, outcome = $("r-outcome").value, category = $("r-category").value;
+    const keep = (r) => (!score || String(r.score) === score) && (!outcome || r.outcome === outcome)
+      && (!category || r.category === category)
+      && (!text || [r.question, r.expected, r.reply, r.verdict, r.roleFit].some((v) => String(v ?? "").toLowerCase().includes(text)));
+    // Grouped by session (per run), in the order the run asked them.
+    const groups = new Map();
+    for (const r of report.rows) {
+      const key = `${r.runId} ${r.session ?? r.id}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(r);
+    }
+    const html = [...groups].map(([key, rows]) => {
+      const shown = rows.map((r, i) => ({ r, turn: i + 1 })).filter(({ r }) => keep(r));
+      if (!shown.length) return "";
+      const scored = rows.filter((r) => typeof r.score === "number");
+      const mean = scored.length ? (scored.reduce((s, r) => s + r.score, 0) / scored.length).toFixed(2) : "–";
+      const body = `<table><thead><tr><th>Turn</th><th>#</th><th>Type</th><th>Persona</th><th>Ans.</th><th>Score</th><th>Outcome</th><th>Verdict</th></tr></thead><tbody>${
+        shown.map(({ r, turn }) => `<tr>
+          <td>${turn}</td><td>${esc(r.line ?? "")}</td><td>${esc(r.category ?? "")}</td><td>${esc(r.persona ?? "")}</td>
+          <td>${esc((r.answerable ?? "").slice(0, 1).toUpperCase())}</td>
+          <td class="score s${esc(r.score ?? "")}">${esc(r.score ?? "–")}</td><td>${esc(r.outcome)}${r.contextRecap ? " (recap)" : ""}</td>
+          <td>${details(`r${r.id}`, esc(r.verdict ?? r.skipReason ?? ""), messageBody(r))}</td></tr>`).join("")}</tbody></table>`;
+      const summary = `${esc(String(rows[0].session ?? "(no session)").slice(0, 8))} <span class="stats">· ${plural(rows.length, "message")} · mean ${mean}`
+        + `${rows[0].askedAt ? ` · asked ${esc(day(rows[0].askedAt))}` : ""}</span><div class="muted">${short(rows[0].question)}</div>`;
+      return `<div class="session">${details(`g${key}`, summary, body)}</div>`;
+    }).join("");
+    $("results").innerHTML = html || `<p class="muted">No message matches the filters.</p>`;
+  }
+
+  function messageBody(r) {
+    const files = (r.attachments ?? []).map((a) => `${esc(a.fileName ?? a.name)} (${Math.round((a.bytes ?? 0) / 1024)} KB)`).join(", ");
+    return `<div class="muted">Question</div><pre>${esc(r.question)}</pre>
+      <div class="muted">Expected answer</div><pre>${esc(r.expected || "(none)")}</pre>
+      <div class="muted">Hanuman's reply${r.latencyS ? ` <span class="mono">(${Math.round(r.latencyS)} s)</span>` : ""}</div>
+      <pre>${esc(r.reply || r.error || r.skipReason || "(no reply)")}</pre>
+      ${files ? `<div class="muted">Attachments: ${files}</div>` : ""}
+      ${(r.flags ?? []).length ? `<div class="muted">Flags: ${esc(r.flags.join(", "))}</div>` : ""}
+      ${r.roleFit ? `<div class="muted">For this role: ${esc(r.roleFit)}</div>` : ""}`;
+  }
+
+  for (const id of ["r-text", "r-score", "r-outcome", "r-category"]) $(id).addEventListener("input", () => report && renderResults());
+
+  show(location.hash === "#results" ? "results" : "jsonl");
+</script>
+</body>
+</html>

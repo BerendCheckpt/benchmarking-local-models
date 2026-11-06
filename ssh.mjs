@@ -14,9 +14,11 @@ export function fingerprint(key) {
 }
 
 export class SshTarget {
-  constructor(prefix, env = process.env) {
+  /** `ClientClass` is ssh2's Client; a test passes a fake. */
+  constructor(prefix, env = process.env, ClientClass = Client) {
     this.prefix = prefix;
     this.env = env;
+    this.Client = ClientClass;
   }
 
   get configured() {
@@ -51,7 +53,7 @@ export class SshTarget {
     return new Promise((resolve, reject) => {
       let options;
       try { options = this.connectOptions(); } catch (err) { return reject(err); }
-      const conn = new Client();
+      const conn = new this.Client();
       conn
         .on("ready", () => {
           conn.exec(command, (err, stream) => {
@@ -65,6 +67,37 @@ export class SshTarget {
                 else reject(new Error(`exited ${code}: ${Buffer.concat(errOut).toString("utf8").trim()}`));
               });
             stream.stderr.on("data", (d) => errOut.push(d));
+          });
+        })
+        .on("error", reject)
+        .connect(options);
+    });
+  }
+
+  /**
+   * Uploads local files over SFTP in one connection: `files` is
+   * `[{ local, remote }]`. Same login and host-key pin as exec. Each remote
+   * folder must exist (create it with exec first).
+   */
+  put(files) {
+    return new Promise((resolve, reject) => {
+      let options;
+      try { options = this.connectOptions(); } catch (err) { return reject(err); }
+      const conn = new this.Client();
+      conn
+        .on("ready", () => {
+          conn.sftp(async (err, sftp) => {
+            if (err) { conn.end(); return reject(err); }
+            try {
+              for (const { local, remote } of files) {
+                await new Promise((ok, fail) => sftp.fastPut(local, remote, (e) => (e ? fail(new Error(`${remote}: ${e.message}`)) : ok())));
+              }
+              conn.end();
+              resolve(files.map((f) => f.remote));
+            } catch (e) {
+              conn.end();
+              reject(e);
+            }
           });
         })
         .on("error", reject)
