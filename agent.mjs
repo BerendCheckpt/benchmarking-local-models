@@ -132,9 +132,17 @@ export function parseSse(text) {
   };
 }
 
+/** "6 hours", "30 minutes": a limit as the error text names it. */
+export function describeLimit(ms) {
+  const minutes = ms / 60_000;
+  return minutes >= 120 && minutes % 60 === 0 ? `${minutes / 60} hours` : `${minutes} minutes`;
+}
+
 // node:http rather than fetch: undici's default 300 s body timeout would cut a
-// slow local model off long before the 10 minutes we allow.
-function post(url, headers, body) {
+// slow local model off long before the 10 minutes we allow. setTimeout is an
+// idle timeout: /from-pdf sends nothing until the job ends, so it must cover
+// the whole job, and TCP keep-alive keeps the quiet connection open meanwhile.
+function post(url, headers, body, timeoutMs = TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
     const u = new URL(url);
     const req = (u.protocol === "https:" ? https : http).request(u, { method: "POST", headers }, (res) => {
@@ -143,14 +151,17 @@ function post(url, headers, body) {
       res.on("data", (c) => { data += c; });
       res.on("end", () => resolve({ status: res.statusCode, data }));
     });
-    req.setTimeout(TIMEOUT_MS, () => req.destroy(new Error(`no response within ${TIMEOUT_MS / 60_000} minutes`)));
+    req.on("socket", (socket) => socket.setKeepAlive(true, 60_000));
+    req.setTimeout(timeoutMs, () => req.destroy(new Error(`no response within ${describeLimit(timeoutMs)}`)));
     req.on("error", reject);
     req.end(body);
   });
 }
 
-export async function postChat(message, sessionId) {
-  const body = JSON.stringify({ message, env: process.env.AGENT_ENV || "qa", sessionId });
+/** `attachments`: `[{ fileName, contentType, dataBase64 }]`, the shape the agent's /chat takes. */
+export async function postChat(message, sessionId, attachments = []) {
+  const files = attachments.map(({ fileName, contentType, dataBase64 }) => ({ fileName, contentType, dataBase64 }));
+  const body = JSON.stringify({ message, env: process.env.AGENT_ENV || "qa", sessionId, ...(files.length ? { attachments: files } : {}) });
   const send = async (token) => post(`${baseUrl()}/chat?stream=1`, {
     authorization: `Bearer ${token}`,
     "content-type": "application/json",
@@ -166,4 +177,29 @@ export async function postChat(message, sessionId) {
     return { ...parseSse(""), error: `HTTP ${res.status}: ${error}` };
   }
   return parseSse(res.data);
+}
+
+// The agent keeps a /from-pdf job running after its caller leaves, so giving up
+// early only stacks the next job on top of it (run 1793885687: seven at once on
+// one Ollama). Wait for the real result: a local model can need about an hour
+// (55 min for one template). The cap only guards against a job that never ends.
+export const GENERATE_TIMEOUT_DEFAULT_S = 6 * 60 * 60;
+export const generateTimeoutMs = () => (Number(process.env.GENERATE_TIMEOUT_S) || GENERATE_TIMEOUT_DEFAULT_S) * 1000;
+
+/**
+ * A labelizer generation call, as QA made it: the PDF to the agent's /from-pdf
+ * (no user token). Resolves to `{ template, demoData, result }`; throws on a
+ * non-200 reply.
+ */
+export async function postFromPdf({ pdfBase64, filename, labelId, retailerId }) {
+  const body = JSON.stringify({ pdfBase64, filename, labelId, retailerId });
+  const res = await post(`${baseUrl()}/from-pdf`, {
+    "content-type": "application/json",
+    "content-length": Buffer.byteLength(body),
+  }, body, generateTimeoutMs());
+  let data;
+  try { data = JSON.parse(res.data); } catch { /* not JSON */ }
+  if (res.status !== 200) throw new Error(`HTTP ${res.status}: ${data?.error ?? res.data}`);
+  if (!data) throw new Error("from-pdf: reply is not JSON");
+  return data;
 }

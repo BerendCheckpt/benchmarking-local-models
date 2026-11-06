@@ -15,6 +15,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { matchByLine } from "./match.mjs";
 
 const INPUT_DIR = process.env.INPUT_DIR || "C:\\Users\\hulshofb\\Documents\\Benchmark tests local models";
 const BENCH_URL = process.env.BENCH_URL || "http://127.0.0.1:4202";
@@ -88,11 +89,11 @@ function match(rows, lines, { partial = false } = {}) {
   lines = lines.slice(0, rows.length);
   const used = new Set();
   const pairs = [];
-  for (const line of lines) {
+  for (const [i, line] of lines.entries()) {
     const j = rows.findIndex((r, k) => !used.has(k) && r.prompt === line.question && r.expected_answer === (line.answer ?? ""));
     if (j < 0) return null;
     used.add(j);
-    pairs.push({ r: rows[j], line });
+    pairs.push({ r: rows[j], line, lineNo: i + 1 });
   }
   return pairs;
 }
@@ -106,6 +107,14 @@ function findInput(rows, runId) {
   const files = readdirSync(INPUT_DIR).filter((f) => f.endsWith(".jsonl"))
     .map((f) => ({ path: join(INPUT_DIR, f), tagged: f.includes(".tagged."), mtime: statSync(join(INPUT_DIR, f)).mtimeMs }))
     .sort((a, b) => b.tagged - a.tagged || b.mtime - a.mtime);
+  // A run of chosen messages (input_line saved) matches by line number.
+  if (rows.every((r) => Number.isInteger(r.input_line))) {
+    for (const f of files) {
+      const lines = readLines(f.path);
+      const pairs = matchByLine(rows, lines);
+      if (pairs) return { input: f.path, partial: false, pairs, of: lines.length };
+    }
+  }
   for (const f of files) {
     const pairs = match(rows, readLines(f.path));
     if (pairs) return { input: f.path, partial: false, pairs };
@@ -126,31 +135,37 @@ for (const runId of runIds) {
   const rows = JSON.parse(psql(`
     SELECT coalesce(json_agg(t ORDER BY t.n), '[]') FROM (
       SELECT row_number() OVER (ORDER BY created_at, ctid)::int AS n, created_at AS ts, model, "sessionId", prompt, expected_answer, reply, ok,
-             token_limit, skip_reason, context_recap, error, latency_ms, tools, "toolCalls", turns
-      FROM benchmark_results.rsults WHERE run_id = ${runId}
+             token_limit, skip_reason, context_recap, error, latency_ms, tools, "toolCalls", turns,
+             to_jsonb(r) -> 'attachments' AS attachments, -- null on rows from before the column existed
+             (to_jsonb(r) ->> 'input_line')::int AS input_line
+      FROM benchmark_results.rsults r WHERE run_id = ${runId}
     ) t`));
   if (!rows.length) throw new Error(`run ${runId} has no rows`);
 
   let found;
   if (args.input) {
     const lines = readLines(args.input);
-    const pairs = match(rows, lines) ?? match(rows, lines, { partial: true });
+    const byLine = matchByLine(rows, lines);
+    const pairs = byLine ?? match(rows, lines) ?? match(rows, lines, { partial: true });
     if (!pairs) throw new Error(`${args.input} does not match run ${runId}`);
-    found = { input: args.input, partial: lines.length > rows.length, pairs };
+    found = byLine ? { input: args.input, partial: false, pairs, of: lines.length }
+      : { input: args.input, partial: lines.length > rows.length, pairs };
   } else {
     found = findInput(rows, runId);
     if (!found.input) console.error(`run ${runId}: no input file in ${INPUT_DIR} matches; sessions and dates come from the rows only`);
   }
 
-  runs.push({ runId, model: rows[0].model, input: found.input, partial: found.partial,
+  // selection: a run of messages chosen on the selection page, out of the file's lines.
+  const selection = found.of && found.of > rows.length ? { asked: rows.length, of: found.of } : null;
+  runs.push({ runId, model: rows[0].model, input: found.input, partial: found.partial, selection,
     from: rows[0].ts, to: rows.at(-1).ts, messages: rows.length });
   // id numbers the items across all runs, in run order and then input order.
-  for (const [i, { r, line }] of found.pairs.entries()) {
+  for (const { r, line, lineNo } of found.pairs) {
     items.push({
       id: items.length + 1,
       runId,
       model: r.model,
-      line: line ? i + 1 : null,
+      line: line ? lineNo : null,
       createdAt: r.ts,
       seq: r.n, // insertion order; breaks created_at ties in backfilled runs
       session: line?.session ?? r.sessionId,
@@ -167,6 +182,7 @@ for (const runId of runIds) {
       latencyS: Math.round(r.latency_ms / 1000),
       tools: r.tools ?? [],
       toolCalls: r.toolCalls,
+      attachments: r.attachments ?? [], // file metadata only: name, type, bytes, sha256
     });
   }
 }

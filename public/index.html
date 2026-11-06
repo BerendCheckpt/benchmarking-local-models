@@ -8,22 +8,19 @@
 </head>
 <body>
 <main>
-  <header><h1>Model benchmark</h1><a href="/results">Results</a></header>
+  <header><h1>Model benchmark</h1><nav><a href="/new">New benchmark</a> · <a href="/results">Results</a></nav></header>
 
   <section id="login" hidden>
-    <p>Sign in with your CheckNet account so the benchmark can call the agent.</p>
+    <p>Your CheckNet login has expired. Sign in again so the running benchmark can keep calling the agent.</p>
     <a class="button" id="login-link" href="/login">Log in</a>
     <p id="login-note" class="muted"></p>
   </section>
 
-  <section id="setup" hidden>
-    <label for="file">Questions (.jsonl)</label>
-    <input id="file" type="file" accept=".jsonl,.json,.txt">
-    <label for="model">Model</label>
-    <select id="model"><option value="">Loading models…</option></select>
-    <button id="start" disabled>Start benchmark</button>
-    <p id="message" class="muted"></p>
+  <section id="idle" hidden>
+    <p>No benchmark is running.</p>
+    <a class="button" href="/new">New benchmark</a>
   </section>
+  <p id="message" class="muted"></p>
 
   <section id="progress-box" hidden>
     <h2><span id="state"></span> <span id="run-model" class="muted"></span></h2>
@@ -50,56 +47,8 @@
 </main>
 <script src="/common.js"></script>
 <script>
-  let jsonl = "";
   let current = null, currentSeenAt = 0, lastSessionsJson = "";
-  let loginOpened = false; // opened once each time the app becomes logged out
-
-  // The CheckNet login in a pop-up, centred on this window. Returns false when the browser blocked it.
-  function openLogin() {
-    const w = 520, h = 700;
-    const left = Math.round(window.screenX + (window.outerWidth - w) / 2);
-    const top = Math.round(window.screenY + (window.outerHeight - h) / 2);
-    const popup = window.open("/login", "cnu-login", `popup,width=${w},height=${h},left=${left},top=${top}`);
-    if (popup) popup.focus();
-    return !!popup;
-  }
-
-  // No token, or the refresh token was rejected: open the login once. A browser
-  // blocks a pop-up that is not opened from a click, so the button stays as a fallback.
-  function promptLogin() {
-    if (loginOpened) return;
-    loginOpened = true;
-    $("login-note").textContent = openLogin()
-      ? "The login window is open. Sign in there with your QA account."
-      : "Your browser blocked the login window. Use Log in to open it.";
-  }
-
-  $("login-link").addEventListener("click", (e) => {
-    if (openLogin()) {
-      e.preventDefault();
-      $("login-note").textContent = "The login window is open. Sign in there with your QA account.";
-    } // blocked: let the link log in in this tab instead
-  });
-
-  window.addEventListener("message", (e) => {
-    if (e.origin !== location.origin || e.data?.type !== "login-done") return;
-    $("login-note").textContent = e.data.error ? `Login failed: ${e.data.error}` : "";
-    poll();
-  });
-
-  function updateStart() {
-    $("start").disabled = !jsonl || !$("model").value;
-  }
-
-  async function loadModels() {
-    try {
-      const models = await api("/api/models");
-      $("model").replaceChildren(new Option("Choose a model", ""), ...models.map((m) => new Option(m, m)));
-    } catch (err) {
-      $("model").replaceChildren(new Option("Could not load models", ""));
-      $("message").textContent = err.message;
-    }
-  }
+  setupLogin(() => poll());
 
   function renderCurrent() {
     $("current-box").hidden = !current;
@@ -166,10 +115,10 @@
   async function poll() {
     try {
       const { loggedIn, run } = await api("/api/status");
-      $("login").hidden = loggedIn;
-      if (loggedIn) loginOpened = false;
-      else promptLogin();
-      if (loggedIn && $("setup").hidden) { $("setup").hidden = false; loadModels(); }
+      const active = ["starting agent", "running"].includes(run.state);
+      // Here the login matters only while a run needs it; a new run logs in on /new.
+      showLogin(loggedIn || !active);
+      $("idle").hidden = active;
       $("progress-box").hidden = run.state === "idle";
       $("state").textContent = run.state;
       $("run-model").textContent = run.model ? `(${run.model})` : "";
@@ -192,28 +141,6 @@
       $("message").textContent = err.message;
     }
   }
-
-  $("file").addEventListener("change", async (e) => {
-    const file = e.target.files[0];
-    jsonl = file ? await file.text() : "";
-    updateStart();
-  });
-  $("model").addEventListener("change", updateStart);
-  $("start").addEventListener("click", async () => {
-    $("message").textContent = "";
-    try {
-      const { total } = await api("/api/run", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ model: $("model").value, jsonl }),
-      });
-      $("message").textContent = `Started with ${total} questions.`;
-      open.clear();
-      poll();
-    } catch (err) {
-      $("message").textContent = err.message;
-    }
-  });
 
   poll();
   setInterval(poll, 2000);

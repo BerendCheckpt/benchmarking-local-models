@@ -194,5 +194,78 @@ const appendix = [
     ...list.map((r, i) => messageRow(r, i + 1, list.length)),
   ]),
 ];
+// Irrelevant questions: does Hanuman stop and tell the asker it is out of scope?
+const irrelevant = asked.filter((r) => r.relevant === "no");
+if (irrelevant.length) {
+  const st = (l, v) => l.filter((r) => r.stopped === v).length;
+  const line = (k, l) => [k, l.length, st(l, "yes"), st(l, "partial"), st(l, "no"), mean(l)];
+  const byPersona = {};
+  for (const r of irrelevant) (byPersona[r.persona ?? "unknown"] ??= []).push(r);
+  table("Irrelevant questions (outside Hanuman's scope)", ["Persona", "n", "Stopped and explained", "Stopped, no explanation / late", "Answered anyway", "Mean"],
+    [line("all", irrelevant), ...Object.entries(byPersona).sort((a, b) => b[1].length - a[1].length).map(([k, l]) => line(k, l))]);
+  console.log(`\nIrrelevant items: ${irrelevant.map((r) => `${r.id} (${r.stopped ?? "?"})`).join(", ")}`);
+}
+
+// Advice per role: how each persona is served, and the judges' roleFit notes.
+const personaGroups = groupBy("persona");
+table("Advice per role", ["Persona", "n", "Weighted", "Mean", "Irrelevant", "With advice"], personaGroups.map(([k, l]) => [
+  k, l.length, weighted(l), mean(l), l.filter((r) => r.relevant === "no").length, l.filter((r) => r.roleFit).length]));
+console.log("\n### roleFit notes per persona (for \"How Hanuman answers each role\")");
+for (const [k, l] of personaGroups) {
+  const notes = l.filter((r) => r.roleFit);
+  if (!notes.length) continue;
+  console.log(`\n#### ${k} (${notes.length})\n`);
+  for (const r of notes.sort((a, b) => a.score - b.score)) console.log(`- ${r.id} [${r.category}, score ${r.score}] ${r.roleFit}`);
+}
+
+// Labelizer questions vs RI (label-ri.mjs): one summary line per label id.
+// The row-level "Label details" live in labels.md, which assemble-report.mjs
+// splices into the report; they are never printed here.
+let labelData = null;
+try { labelData = read("labels.json"); } catch { /* label-ri.mjs not run */ }
+const labels = labelData?.items ?? [];
+const labelFacts = labelData?.labels ?? {};
+if (labels.length) {
+  const byId = new Map(all.map((r) => [r.id, r]));
+  // Every item that names a label id: generation calls and questions alike.
+  const lab = labels.filter((l) => l.summary);
+  const median = (xs) => { const s = xs.filter((x) => x !== null && x !== undefined).sort((a, b) => a - b); return s.length ? s[Math.floor((s.length - 1) / 2)] : null; };
+  const dur = (min) => (min === null || min === undefined ? "–" : min < 60 ? `${min} min` : min < 2880 ? `${(min / 60).toFixed(1)} h` : `${(min / 1440).toFixed(1)} d`);
+  const perLabel = new Map();
+  for (const l of lab) (perLabel.get(l.labelId) ?? perLabel.set(l.labelId, []).get(l.labelId)).push(l);
+  const checks = (list) => {
+    const c = {};
+    for (const l of list) { const v = byId.get(l.itemId)?.labelCheck ?? "–"; c[v] = (c[v] ?? 0) + 1; }
+    return Object.entries(c).map(([k, n]) => `${k} ${n}`).join(", ");
+  };
+  const gaps = (list) => list.map((l) => l.summary.minutesToNextCorrection).filter((g) => g !== null);
+  const longest = (xs) => (xs.length ? Math.max(...xs) : null);
+  const cats = (list) => [...new Set(list.map((l) => byId.get(l.itemId)?.category ?? "–"))].join(", ");
+  const matches = (list) => [...new Set(list.map((l) => l.pdfMatch ?? "–"))].join(", ");
+  const rowsOut = [...perLabel].map(([id, list]) => {
+    const s = list[0].summary; // the label's totals are the same for every item
+    const f = labelFacts[id] ?? {};
+    return [id, list.map((l) => l.itemId).join(", "), cats(list), list.length, s.generations, s.corrections, (s.corrections / list.length).toFixed(1),
+      dur(median(gaps(list))), dur(longest(gaps(list))), dur(s.minutesGenerationToFirstCorrection),
+      (f.retailers ?? []).length, f.shared ? "yes" : "no", matches(list), checks(list)];
+  });
+  const totalQ = lab.length;
+  const firsts = [...perLabel.values()].map((list) => list[0].summary);
+  const totalCorr = firsts.reduce((n, s) => n + s.corrections, 0);
+  const totalGen = firsts.reduce((n, s) => n + s.generations, 0);
+  if (lab.length) {
+    table("Labelizer questions vs RetailerIntegration (ri.labelizer_generation_feedback)",
+      ["Label id", "Items", "Category", "Questions", "Generations", "Corrections", "Corrections per question", "Question → next correction (median)", "(longest)", "First generation → first correction", "Retailers", "Shared", "PDF match", "labelCheck"],
+      [[`all (${perLabel.size} labels)`, "", "", totalQ, totalGen, totalCorr, totalQ ? (totalCorr / totalQ).toFixed(1) : "–",
+        dur(median(gaps(lab))), dur(longest(gaps(lab))), dur(median(firsts.map((s) => s.minutesGenerationToFirstCorrection))),
+        "", "", "", checks(lab)],
+      ...rowsOut]);
+    const noTime = lab.filter((l) => !l.askedAt).length;
+    if (noTime) console.log(`\n${noTime} label item(s) have no askedAt: counted, but without time gaps.`);
+    console.log("\nRow-level label details: labels.md (spliced into the report by assemble-report.mjs; don't open it).");
+  }
+  const failed = Object.entries(labelFacts).filter(([, f]) => f.error);
+  if (failed.length) console.log(`\nRI lookup failed for label id(s) ${failed.map(([id]) => id).join(", ")}: ${failed[0][1].error}`);
+}
 writeFileSync(join(dir, "appendix.md"), appendix.join("\n") + "\n");
 console.log(`\nAppendix table written to ${join(dir, "appendix.md")}`);

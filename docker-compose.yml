@@ -14,9 +14,14 @@ services:
     # is why the page is bound to 127.0.0.1 only.
     group_add:
       - "0"
+    environment:
+      QA_SESSIONS_SSH_KEY_FILE: /run/secrets/qa_sessions_key
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./data:/data
+      # Private key for the QA sessions host, read-only. Without a key path the
+      # mount is /dev/null and messages that had a file are skipped.
+      - ${QA_SESSIONS_SSH_KEY_PATH:-/dev/null}:/run/secrets/qa_sessions_key:ro
     networks:
       - pg
 

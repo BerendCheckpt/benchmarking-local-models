@@ -13,17 +13,20 @@ export async function ensureSchema() {
     ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now(),
     ADD COLUMN IF NOT EXISTS token_limit boolean NOT NULL DEFAULT false,
     ADD COLUMN IF NOT EXISTS skip_reason text NOT NULL DEFAULT '',
-    ADD COLUMN IF NOT EXISTS context_recap boolean NOT NULL DEFAULT false`);
+    ADD COLUMN IF NOT EXISTS context_recap boolean NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS attachments jsonb,
+    ADD COLUMN IF NOT EXISTS input_line int`);
 }
 
 export async function insertResult(r, model, runId) {
   await pool.query(
     `INSERT INTO ${TABLE}
        (run_id, prompt, expected_answer, latency_ms, ok, reply, error, "sessionId",
-        "costUsd", turns, tools, "toolCalls", proposals, "deltaChars", model, token_limit, skip_reason, context_recap)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
+        "costUsd", turns, tools, "toolCalls", proposals, "deltaChars", model, token_limit, skip_reason, context_recap, attachments, input_line)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
     [runId, r.prompt, r.expected_answer, r.latency_ms, r.ok, r.reply, r.error || null, r.sessionId,
-      r.costUsd, r.turns, r.tools, r.toolCalls, r.proposals, r.deltaChars, model, !!r.tokenLimit, r.skipReason ?? "", !!r.contextRecap],
+      r.costUsd, r.turns, r.tools, r.toolCalls, r.proposals, r.deltaChars, model, !!r.tokenLimit, r.skipReason ?? "", !!r.contextRecap,
+      r.attachments?.length ? JSON.stringify(r.attachments) : null, r.inputLine ?? null],
   );
 }
 
@@ -38,7 +41,7 @@ export async function queryResults({ model = null, from = null, to = null, minMe
      )
      SELECT r.run_id, r.model, r.created_at, r."sessionId", s.session_messages, r.prompt, r.expected_answer,
             r.reply, r.error, r.ok, r.token_limit, r.skip_reason, r.context_recap, r.latency_ms, r.turns, r.tools, r."toolCalls",
-            r.proposals, r."costUsd"
+            r.proposals, r."costUsd", r.attachments
      FROM ${TABLE} r JOIN sessions s USING (run_id, "sessionId")
      WHERE ($1::text IS NULL OR r.model = $1)
        AND ($2::timestamptz IS NULL OR r.created_at >= $2)

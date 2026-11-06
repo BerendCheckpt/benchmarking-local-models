@@ -1,7 +1,9 @@
 // Runs a benchmark: one conversation per `session`, messages in order, each
 // follow-up continuing the agent session the previous answer returned.
-import { applyModel, mirrorSkipReason, missingMirrorTokens, postChat } from "./agent.mjs";
+import { applyModel, mirrorSkipReason, missingMirrorTokens, postChat, postFromPdf } from "./agent.mjs";
 import { insertResult } from "./db.mjs";
+import { QaSessionSource, attachmentMeta, attachmentRefs } from "./qa-sessions.mjs";
+import { isLabelizerGeneration, labelRefs } from "./labels.mjs";
 
 export const status = {
   state: "idle", model: null, done: 0, total: 0, failures: 0, tokenLimits: 0, skipped: 0, unsaved: 0, lastError: "",
@@ -18,7 +20,10 @@ export function parseJsonl(text) {
     if (row.needs !== undefined && !(Array.isArray(row.needs) && row.needs.every((n) => typeof n === "string"))) {
       throw new Error(`line ${i + 1}: "needs" must be a list of strings`);
     }
-    return [{ session: row.session ?? null, question: row.question, answer: row.answer ?? "", needs: row.needs ?? null }];
+    return [{
+      session: row.session ?? null, question: row.question, answer: row.answer ?? "", needs: row.needs ?? null,
+      askedAt: typeof row.askedAt === "string" ? row.askedAt : null, line: i + 1, // 1-based line in the file
+    }];
   });
 }
 
@@ -29,6 +34,38 @@ const MIRROR_WORDS = /\b(fds|source code|plugin.{0,12}(code|logic)|(import|expor
 /** Does answering this row need the repo mirror (plugin code, FDS, Layout Designer manual)? */
 export function needsMirror(row) {
   return row.needs ? row.needs.includes("mirror") : MIRROR_WORDS.test(row.question);
+}
+
+/**
+ * The rows on the given 1-based input lines, in file order. Without `lines`
+ * every row is kept. Throws a 400 for an empty or unknown selection.
+ */
+export function selectRows(rows, lines) {
+  if (lines === undefined || lines === null) return rows;
+  const bad = () => Object.assign(new Error("lines must be a non-empty list of line numbers from the file"), { statusCode: 400 });
+  if (!Array.isArray(lines) || !lines.length || !lines.every(Number.isInteger)) throw bad();
+  const wanted = new Set(lines);
+  const known = new Set(rows.map((r) => r.line));
+  const unknown = [...wanted].filter((l) => !known.has(l));
+  if (unknown.length) throw Object.assign(new Error(`no question on line ${unknown.join(", ")}`), { statusCode: 400 });
+  return rows.filter((r) => wanted.has(r.line));
+}
+
+/**
+ * The file as the selection page shows it: sessions with their messages and
+ * hints for choosing (files, labelizer generation, label ids, mirror).
+ */
+export function previewSessions(rows) {
+  return groupBySession(rows).map((group, i) => ({
+    label: group[0].session ?? `(no session) #${i + 1}`,
+    messages: group.map((r) => ({
+      line: r.line, question: r.question, answer: r.answer, askedAt: r.askedAt,
+      needsMirror: needsMirror(r),
+      files: attachmentRefs(r.question).map((f) => f.name),
+      labelizer: isLabelizerGeneration(r.question),
+      labelIds: labelRefs(r.question).map((l) => l.labelId),
+    })),
+  }));
 }
 
 /** Groups rows by session, keeping file order. Rows without a session stand alone. */
@@ -48,12 +85,74 @@ export function snapshot() {
   return { ...status, current };
 }
 
-async function ask(question, sessionId) {
+const NO_RESULT = { ok: false, reply: "", error: "", tokenLimit: false, sessionId: "", costUsd: 0, turns: 0, tools: [], toolCalls: 0, proposals: 0, deltaChars: 0 };
+
+async function ask(question, sessionId, attachments, post = postChat) {
   try {
-    return await postChat(question, sessionId);
+    return await post(question, sessionId, attachments);
   } catch (err) {
-    return { ok: false, reply: "", error: err.message, tokenLimit: false, sessionId: "", costUsd: 0, turns: 0, tools: [], toolCalls: 0, proposals: 0, deltaChars: 0 };
+    return { ...NO_RESULT, error: err.message };
   }
+}
+
+/** The ids a labelizer generation prompt targets: `{ labelId, retailerId }`, numbers or undefined. */
+export function generationIds(question) {
+  const id = (re) => { const m = re.exec(question ?? ""); return m ? Number(m[1]) : undefined; };
+  return { labelId: id(/Target LabelId:\s*(\d+)/i), retailerId: id(/Target RetailerId:\s*(\d+)/i) };
+}
+
+export const isPdf = (file) => file.contentType === "application/pdf" || /\.pdf$/i.test(file.fileName ?? "");
+
+/** Every engine object in a template (`$type` …Template.Objects.X), at any depth: its short type names. */
+function objectTypes(node, types = []) {
+  if (Array.isArray(node)) node.forEach((n) => objectTypes(n, types));
+  else if (node && typeof node === "object") {
+    const m = /\.Objects\.(\w+)$/.exec(node.$type ?? "");
+    if (m) types.push(m[1]);
+    Object.values(node).forEach((v) => objectTypes(v, types));
+  }
+  return types;
+}
+
+/** The saved reply for a /from-pdf result: result.json's summary plus what the template holds. */
+export function generationReply({ template, result }) {
+  const r = result ?? {};
+  const lines = [
+    "Labelizer template generated (/from-pdf).",
+    `result.json: label size ${r.labelSizeMm ?? "?"} mm, ${r.dpi ?? "?"} dpi, objectCount ${r.objectCount ?? "?"}`,
+  ];
+  const caveats = Array.isArray(r.caveats) ? r.caveats : [];
+  lines.push(caveats.length ? "Caveats:" : "Caveats: none", ...caveats.map((c) => `- ${c}`));
+  let parsed;
+  try { parsed = typeof template === "string" ? JSON.parse(template) : template; } catch { /* below */ }
+  if (!parsed) lines.push("Template: not valid JSON");
+  else {
+    const counts = {};
+    for (const t of objectTypes(parsed)) counts[t] = (counts[t] ?? 0) + 1;
+    const total = Object.values(counts).reduce((a, b) => a + b, 0);
+    const byType = Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([t, n]) => `${t} ${n}`).join(", ");
+    lines.push(`Template: ${total} objects${byType ? ` (${byType})` : ""}`);
+  }
+  return lines.join("\n");
+}
+
+/** A labelizer generation call replayed against /from-pdf. No agent session: /from-pdf has none. */
+export async function generate(question, attachments, post = postFromPdf) {
+  const pdf = attachments.find(isPdf);
+  if (!pdf) return { ...NO_RESULT, error: "no PDF attachment for the labelizer generation call" };
+  try {
+    const out = await post({ pdfBase64: pdf.dataBase64, filename: pdf.fileName, ...generationIds(question) });
+    return { ...NO_RESULT, ok: true, reply: generationReply(out) };
+  } catch (err) {
+    return { ...NO_RESULT, error: err.message };
+  }
+}
+
+/** Sends one message where QA sent it: generation calls to /from-pdf, the rest to /chat. */
+export function replay({ question, sessionId, attachments = [] }, agent = { postChat, postFromPdf }) {
+  return isLabelizerGeneration(question)
+    ? generate(question, attachments, agent.postFromPdf)
+    : ask(question, sessionId, attachments, agent.postChat);
 }
 
 /** The state shown for an answered message. */
@@ -117,19 +216,23 @@ export function markAborted(sessions, error) {
 
 // One question: ask, show the result, then save it. The page is updated before
 // the insert so a database outage cannot lose an answer that took minutes.
-async function answerOne({ view, s, m, of, question, answer, sessionId, history, model, runId }) {
+// `question` is what the agent gets; `prompt` is the input line as saved (the report matches rows to it).
+async function answerOne({ view, s, m, of, question, prompt = question, attachments = [], answer, line = null, sessionId, history, model, runId }) {
   const started = Date.now();
+  // A generation call goes to /from-pdf: no agent session, no recap, and the conversation's session is left as it was.
+  const generation = isLabelizerGeneration(question);
   // Without a session the agent has none of the earlier turns, so they go in the message.
-  const contextRecap = !sessionId && history.length > 0;
+  const contextRecap = !generation && !sessionId && history.length > 0;
   view.messages[m].state = "running";
   status.current = { session: s, label: view.label, message: m, of, question, sessionId, contextRecap, startedAt: started };
-  const result = await ask(contextRecap ? withRecap(history, question) : question, sessionId);
+  const result = await replay({ question: contextRecap ? withRecap(history, question) : question, sessionId, attachments });
   const latency_ms = Date.now() - started;
   const state = answerState(result);
   // A failed turn returns no session; keep the old one so the follow-ups still have context.
-  const usedSessionId = result.sessionId || sessionId;
-  const nextSessionId = nextSession(state, usedSessionId);
-  Object.assign(view.messages[m], { ...result, sessionId: usedSessionId, latency_ms, state, contextRecap });
+  const usedSessionId = generation ? "" : result.sessionId || sessionId;
+  const nextSessionId = generation ? sessionId : nextSession(state, usedSessionId);
+  const files = attachmentMeta(attachments);
+  Object.assign(view.messages[m], { ...result, sessionId: usedSessionId, latency_ms, state, contextRecap, attachments: files });
   view.agentSessionId = nextSessionId;
   status.current = null;
   status.done++;
@@ -137,7 +240,7 @@ async function answerOne({ view, s, m, of, question, answer, sessionId, history,
   if (state === "failed") status.failures++;
   if (state === "token-limit") status.tokenLimits++;
 
-  const row = { ...result, sessionId: usedSessionId, prompt: question, expected_answer: answer, latency_ms, contextRecap };
+  const row = { ...result, sessionId: usedSessionId, prompt, expected_answer: answer, latency_ms, contextRecap, attachments: files, inputLine: line };
   try {
     await withRetry(() => insertResult(row, model, runId));
   } catch (err) {
@@ -146,12 +249,12 @@ async function answerOne({ view, s, m, of, question, answer, sessionId, history,
     status.unsaved++;
   }
   status.last = { label: view.label, message: m, of, ...view.messages[m] };
-  history.push({ question, reply: result.reply });
+  if (!generation) history.push({ question, reply: result.reply });
   return nextSessionId;
 }
 
 /** Saves a message that was not asked, with the reason, so the run shows what it left out. */
-async function skipOne({ view, m, question, answer, sessionId: agentSession, model, runId, reason }) {
+async function skipOne({ view, m, question, answer, line = null, sessionId: agentSession, model, runId, reason }) {
   // No agent session yet: name it after the input session so skipped conversations stay apart.
   const sessionId = agentSession || `skipped:${view.label}`;
   Object.assign(view.messages[m], { state: "skipped", skipReason: reason, sessionId });
@@ -159,7 +262,7 @@ async function skipOne({ view, m, question, answer, sessionId: agentSession, mod
   status.skipped++;
   const row = {
     ok: false, reply: "", error: "", tokenLimit: false, sessionId, costUsd: 0, turns: 0, tools: [], toolCalls: 0,
-    proposals: 0, deltaChars: 0, prompt: question, expected_answer: answer, latency_ms: 0, skipReason: reason,
+    proposals: 0, deltaChars: 0, prompt: question, expected_answer: answer, latency_ms: 0, skipReason: reason, inputLine: line,
   };
   try {
     await withRetry(() => insertResult(row, model, runId));
@@ -207,17 +310,29 @@ export async function run(model, rows) {
     status.mirrorMissing = await mirrorStatus();
     status.state = "running";
     const runId = Math.floor(Date.now() / 1000);
+    const qa = new QaSessionSource();
     for (const [s, conversation] of groups.entries()) {
       const view = status.sessions[s];
       const skips = skipReasons(conversation, status.mirrorMissing);
       let sessionId = "";
       const history = []; // asked turns, for a recap if the session is lost
-      for (const [m, { question, answer }] of conversation.entries()) {
+      for (const [m, { question, answer, line }] of conversation.entries()) {
         if (skips[m]) {
-          await skipOne({ view, m, question, answer, sessionId, model, runId, reason: skips[m] });
+          await skipOne({ view, m, question, answer, line, sessionId, model, runId, reason: skips[m] });
           continue;
         }
-        sessionId = await answerOne({ view, s, m, of: conversation.length, question, answer, sessionId, history, model, runId });
+        // Only a message that names a file goes to the QA host for it.
+        const prepared = await qa.prepare(conversation[m].session, question);
+        const noPdf = isLabelizerGeneration(question) && !prepared.skip && !prepared.attachments.some(isPdf);
+        if (prepared.skip || noPdf) {
+          const reason = prepared.skip || "labelizer generation call without a PDF to send to /from-pdf";
+          await skipOne({ view, m, question, answer, line, sessionId, model, runId, reason });
+          continue;
+        }
+        sessionId = await answerOne({
+          view, s, m, of: conversation.length, question: prepared.question, prompt: question,
+          attachments: prepared.attachments, answer, line, sessionId, history, model, runId,
+        });
       }
     }
     status.state = "finished";

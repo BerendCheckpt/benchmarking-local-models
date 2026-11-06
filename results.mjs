@@ -51,7 +51,7 @@ export function groupRuns(rows) {
       state: r.skip_reason ? "skipped" : answerState({ ok: r.ok, tokenLimit: r.token_limit }),
       skipReason: r.skip_reason ?? "", contextRecap: !!r.context_recap, latency_ms: r.latency_ms, turns: r.turns,
       tools: r.tools ?? [], toolCalls: r.toolCalls, proposals: r.proposals, costUsd: r.costUsd,
-      sessionId: r.sessionId, createdAt: r.created_at,
+      sessionId: r.sessionId, createdAt: r.created_at, attachments: r.attachments ?? [],
     });
   }
   return [...runs.values()]
