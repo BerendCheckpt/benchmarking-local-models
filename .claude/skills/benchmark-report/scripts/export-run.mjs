@@ -128,6 +128,25 @@ function findInput(rows, runId) {
   return { input: null, partial: false, pairs: rows.map((r) => ({ r, line: null })) };
 }
 
+// A run started from stored messages: each row names its message in hanuman_exports,
+// which gives the original session, question date and needs. No file to match.
+async function fromExports(rows) {
+  const ids = [...new Set(rows.map((r) => r.export_id))];
+  if (!ids.every((id) => /^[0-9a-f-]{36}$/i.test(id))) throw new Error("export_id is not a uuid");
+  const stored = JSON.parse(await psql(`
+    SELECT coalesce(json_agg(json_build_object('id', id, 'session', session, 'askedAt', asked_at, 'needs', needs)), '[]')
+    FROM benchmark_results.hanuman_exports WHERE id IN (${ids.map((id) => `'${id}'`).join(", ")})`));
+  const byId = new Map(stored.map((m) => [m.id, m]));
+  const missing = ids.filter((id) => !byId.has(id));
+  if (missing.length) console.error(`${missing.length} message(s) no longer in hanuman_exports; their sessions come from the rows`);
+  const dates = stored.map((m) => m.askedAt).filter(Boolean).sort();
+  return {
+    input: "hanuman_exports", partial: false,
+    range: dates.length ? { from: dates[0], to: dates.at(-1) } : null,
+    pairs: rows.map((r) => ({ r, line: byId.get(r.export_id) ?? null, lineNo: null })),
+  };
+}
+
 const runs = [];
 const items = [];
 for (const runId of runIds) {
@@ -138,13 +157,16 @@ for (const runId of runIds) {
       SELECT row_number() OVER (ORDER BY created_at, ctid)::int AS n, created_at AS ts, model, "sessionId", prompt, expected_answer, reply, ok,
              token_limit, skip_reason, context_recap, error, latency_ms, tools, "toolCalls", turns,
              to_jsonb(r) -> 'attachments' AS attachments, -- null on rows from before the column existed
-             (to_jsonb(r) ->> 'input_line')::int AS input_line
+             (to_jsonb(r) ->> 'input_line')::int AS input_line,
+             to_jsonb(r) ->> 'export_id' AS export_id -- set on runs chosen from hanuman_exports
       FROM benchmark_results.rsults r WHERE run_id = ${runId}
     ) t`));
   if (!rows.length) throw new Error(`run ${runId} has no rows`);
 
   let found;
-  if (args.input) {
+  if (rows.every((r) => r.export_id)) {
+    found = await fromExports(rows);
+  } else if (args.input) {
     const lines = readLines(args.input);
     const byLine = matchByLine(rows, lines);
     const pairs = byLine ?? match(rows, lines) ?? match(rows, lines, { partial: true });
@@ -158,7 +180,7 @@ for (const runId of runIds) {
 
   // selection: a run of messages chosen on the selection page, out of the file's lines.
   const selection = found.of && found.of > rows.length ? { asked: rows.length, of: found.of } : null;
-  runs.push({ runId, model: rows[0].model, input: found.input, partial: found.partial, selection,
+  runs.push({ runId, model: rows[0].model, input: found.input, partial: found.partial, selection, ...(found.range ? { range: found.range } : {}),
     from: rows[0].ts, to: rows.at(-1).ts, messages: rows.length });
   // id numbers the items across all runs, in run order and then input order.
   for (const { r, line, lineNo } of found.pairs) {

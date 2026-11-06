@@ -20,6 +20,9 @@
     .badge.label { color: var(--ok); border-color: var(--ok); }
     .gap { color: var(--run); font-size: 13px; }
     #start-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; }
+    .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+    .row button { margin-top: 0; }
+    .row input[type=datetime-local] { font: inherit; padding: 4px 6px; }
   </style>
 </head>
 <body>
@@ -33,8 +36,19 @@
   </section>
 
   <section>
-    <label for="file">Questions (.jsonl)</label>
-    <input id="file" type="file" accept=".jsonl,.json,.txt">
+    <label for="file">Upload questions (.jsonl)</label>
+    <div class="row">
+      <input id="file" type="file" accept=".jsonl,.json,.txt">
+      <button id="upload" disabled>Upload</button>
+      <span id="upload-note" class="muted"></span>
+    </div>
+    <p class="muted">Uploaded messages are stored once; a message already stored (same session, question date and question) is skipped.</p>
+    <label for="from">Questions asked from – to (your local time)</label>
+    <div class="row">
+      <input id="from" type="datetime-local">
+      <input id="to" type="datetime-local">
+      <button id="show">Show</button>
+    </div>
     <label for="model">Model</label>
     <select id="model"><option value="">Loading models…</option></select>
     <div id="start-row">
@@ -46,7 +60,7 @@
 
   <section id="select-box" hidden>
     <h2>Sessions and messages</h2>
-    <p class="muted">Everything is selected after loading. Untick what you don't want to ask; unticked messages are left out of the run.</p>
+    <p class="muted">Everything is selected after loading. Untick what you don't want to ask; unticked messages are left out of the run. Turns marked <span class="badge">context</span> were asked before the range; they come along so later questions keep their session's context.</p>
     <div class="toolbar">
       <button class="plain" id="all">Select all</button>
       <button class="plain" id="none">Select none</button>
@@ -57,8 +71,8 @@
 </main>
 <script src="/common.js"></script>
 <script>
-  let jsonl = "", sessions = [], loggedIn = false, running = false;
-  const selected = new Set(); // 1-based input lines
+  let sessions = [], loggedIn = false, running = false, range = null;
+  const selected = new Set(); // stored message ids
 
   const allMessages = () => sessions.flatMap((s) => s.messages);
   const matches = (m, text) => !text || [m.question, m.answer, ...m.files, ...m.labelIds.map((l) => `label ${l}`)]
@@ -69,6 +83,7 @@
 
   function badges(m) {
     return [
+      m.context ? `<span class="badge" title="Asked before the range; an earlier turn of this session">context</span>` : "",
       ...m.files.map((f) => `<span class="badge file" title="Sent with this file; it is fetched from the QA session">file: ${esc(f)}</span>`),
       m.labelizer ? `<span class="badge label">labelizer generation</span>` : "",
       ...m.labelIds.map((l) => `<span class="badge label">label ${esc(l)}</span>`),
@@ -78,8 +93,8 @@
 
   // A ticked message whose earlier turns are unticked is asked without them.
   function gapNote(s, i) {
-    const missing = s.messages.slice(0, i).map((m, j) => (selected.has(m.line) ? null : j + 1)).filter(Boolean);
-    if (!selected.has(s.messages[i].line) || !missing.length) return "";
+    const missing = s.messages.slice(0, i).map((m, j) => (selected.has(m.id) ? null : j + 1)).filter(Boolean);
+    if (!selected.has(s.messages[i].id) || !missing.length) return "";
     return `<div class="gap">Asked without turn${missing.length > 1 ? "s" : ""} ${missing.join(", ")}: the agent lacks that context.</div>`;
   }
 
@@ -88,17 +103,17 @@
     $("sessions").innerHTML = sessions.map((s, si) => {
       const visible = s.messages.map((m, i) => ({ m, i })).filter(({ m }) => matches(m, text));
       if (!visible.length) return "";
-      const ticked = s.messages.filter((m) => selected.has(m.line)).length;
-      const dates = [...new Set(s.messages.map((m) => day(m.askedAt)).filter(Boolean))].sort();
+      const ticked = s.messages.filter((m) => selected.has(m.id)).length;
+      const dates =[...new Set(s.messages.map((m) => day(m.askedAt)).filter(Boolean))].sort();
       const flags = [...new Set(s.messages.flatMap((m) => [...m.files.map(() => "file"), ...(m.labelizer || m.labelIds.length ? ["label"] : [])]))];
       const summary = `${esc(s.label.slice(0, 8))} <span class="stats">· ${s.messages.length} message${s.messages.length === 1 ? "" : "s"}`
         + `${dates.length ? ` · ${dates[0]}${dates.length > 1 ? ` to ${dates.at(-1)}` : ""}` : ""} · ${ticked} selected`
         + `${flags.includes("file") ? ` · <span class="badge file">file</span>` : ""}${flags.includes("label") ? ` · <span class="badge label">label</span>` : ""}`
         + `</span><div class="muted">${shortQuestion(s.messages[0].question)}</div>`;
       const rows = visible.map(({ m, i }) => `<div class="message pick">
-          <input type="checkbox" data-line="${m.line}" ${selected.has(m.line) ? "checked" : ""} aria-label="Ask message ${i + 1}">
-          ${details(`m${m.line}`, `<strong>${i + 1}.</strong> ${shortQuestion(m.question)}${badges(m)}`,
-            `<div class="muted">Question <span class="mono">(line ${m.line}${m.askedAt ? `, asked ${esc(m.askedAt)}` : ""})</span></div><pre>${esc(m.question)}</pre>
+          <input type="checkbox" data-id="${esc(m.id)}" ${selected.has(m.id) ? "checked" : ""} aria-label="Ask message ${i + 1}">
+          ${details(`m${m.id}`, `<strong>${i + 1}.</strong> ${shortQuestion(m.question)}${badges(m)}`,
+            `<div class="muted">Question${m.askedAt ? ` <span class="mono">(asked ${esc(m.askedAt)})</span>` : ""}</div><pre>${esc(m.question)}</pre>
              <div class="muted">Expected</div><pre>${esc(m.answer || "(none)")}</pre>`)}
         </div>${gapNote(s, i)}`).join("");
       return `<div class="session pick">
@@ -109,15 +124,15 @@
     // A partly selected session shows the mixed state.
     for (const box of $("sessions").querySelectorAll("input[data-session]")) {
       const s = sessions[box.dataset.session];
-      const ticked = s.messages.filter((m) => selected.has(m.line)).length;
+      const ticked = s.messages.filter((m) => selected.has(m.id)).length;
       box.indeterminate = ticked > 0 && ticked < s.messages.length;
     }
     updateStart();
   }
 
   function updateStart() {
-    const msgs = allMessages().filter((m) => selected.has(m.line));
-    const inSessions = sessions.filter((s) => s.messages.some((m) => selected.has(m.line))).length;
+    const msgs = allMessages().filter((m) => selected.has(m.id));
+    const inSessions = sessions.filter((s) => s.messages.some((m) => selected.has(m.id))).length;
     $("count").textContent = sessions.length
       ? `${msgs.length} of ${allMessages().length} messages in ${inSessions} session${inSessions === 1 ? "" : "s"} selected` : "";
     $("start").disabled = !loggedIn || running || !msgs.length || !$("model").value;
@@ -126,19 +141,18 @@
 
   $("sessions").addEventListener("change", (e) => {
     const box = e.target;
-    if (box.dataset.line) {
-      const line = Number(box.dataset.line);
-      box.checked ? selected.add(line) : selected.delete(line);
+    if (box.dataset.id) {
+      box.checked ? selected.add(box.dataset.id) : selected.delete(box.dataset.id);
     } else if (box.dataset.session) {
       // A session box ticks or clears all its messages, shown or not.
-      for (const m of sessions[box.dataset.session].messages) box.checked ? selected.add(m.line) : selected.delete(m.line);
+      for (const m of sessions[box.dataset.session].messages) box.checked ? selected.add(m.id) : selected.delete(m.id);
     }
     render();
   });
 
   // With a filter, Select all / none apply to the messages it shows.
-  $("all").addEventListener("click", () => { shown().forEach((m) => selected.add(m.line)); render(); });
-  $("none").addEventListener("click", () => { shown().forEach((m) => selected.delete(m.line)); render(); });
+  $("all").addEventListener("click", () => { shown().forEach((m) => selected.add(m.id)); render(); });
+  $("none").addEventListener("click", () => { shown().forEach((m) => selected.delete(m.id)); render(); });
   $("filter").addEventListener("input", () => {
     const filtered = !!filterText();
     $("all").textContent = filtered ? "Select shown" : "Select all";
@@ -146,25 +160,60 @@
     render();
   });
 
-  $("file").addEventListener("change", async (e) => {
-    const file = e.target.files[0];
-    $("message").textContent = "";
-    jsonl = file ? await file.text() : "";
-    sessions = [];
-    selected.clear();
-    open.clear();
-    if (jsonl) {
-      try {
-        ({ sessions } = await api("/api/parse", {
-          method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonl }),
-        }));
-        allMessages().forEach((m) => selected.add(m.line));
-      } catch (err) {
-        $("message").textContent = err.message;
-      }
-    }
+  // datetime-local holds local time without a zone; Date reads it as local.
+  const localInput = (d) => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  const now = new Date();
+  $("to").value = localInput(now);
+  $("from").value = localInput(new Date(now.getTime() - 7 * 24 * 3600 * 1000));
+
+  /**
+   * Loads the messages of a range. With `keepTicks` (a refresh after an upload)
+   * the ticks stay as they were and only messages new to the page are ticked.
+   */
+  async function loadRange(from, to, { keepTicks = false } = {}) {
+    const before = new Set(allMessages().map((m) => m.id));
+    const query = new URLSearchParams({ from: new Date(from).toISOString(), to: new Date(to).toISOString() });
+    ({ sessions } = await api(`/api/exports?${query}`));
+    range = { from, to };
+    if (!keepTicks) { selected.clear(); open.clear(); }
+    const ids = new Set(allMessages().map((m) => m.id));
+    for (const id of [...selected]) if (!ids.has(id)) selected.delete(id);
+    allMessages().forEach((m) => { if (!keepTicks || !before.has(m.id)) selected.add(m.id); });
     $("select-box").hidden = !sessions.length;
+    if (!sessions.length) $("message").textContent = "No stored message was asked in that range.";
     render();
+  }
+
+  $("show").addEventListener("click", async () => {
+    $("message").textContent = "";
+    if (!$("from").value || !$("to").value) return void ($("message").textContent = "Pick both a from and a to time.");
+    try { await loadRange($("from").value, $("to").value); } catch (err) { $("message").textContent = err.message; }
+  });
+
+  $("file").addEventListener("change", () => {
+    $("upload").disabled = !$("file").files.length;
+    $("upload-note").textContent = "";
+  });
+
+  $("upload").addEventListener("click", async () => {
+    const file = $("file").files[0];
+    if (!file) return;
+    $("upload").disabled = true;
+    $("upload-note").textContent = "Uploading…";
+    try {
+      const c = await api("/api/exports", {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonl: await file.text() }),
+      });
+      $("upload-note").textContent = `${c.inserted} new, ${c.duplicates} already stored`
+        + `${c.withoutAskedAt ? ` (${c.withoutAskedAt} without a question date, so no range picks them)` : ""}`
+        + `${c.failed ? `, ${c.failed} failed (see the app log)` : ""}.`;
+      // An overview that is already showing a range picks up what was just stored.
+      if (range) await loadRange(range.from, range.to, { keepTicks: true });
+    } catch (err) {
+      $("upload-note").textContent = err.message;
+    } finally {
+      $("upload").disabled = !$("file").files.length;
+    }
   });
 
   async function loadModels() {
@@ -181,11 +230,11 @@
 
   $("start").addEventListener("click", async () => {
     $("message").textContent = "";
-    const lines = allMessages().filter((m) => selected.has(m.line)).map((m) => m.line);
+    const ids = allMessages().filter((m) => selected.has(m.id)).map((m) => m.id);
     try {
       await api("/api/run", {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ model: $("model").value, jsonl, lines }),
+        body: JSON.stringify({ model: $("model").value, ids }),
       });
       location.href = "/";
     } catch (err) {

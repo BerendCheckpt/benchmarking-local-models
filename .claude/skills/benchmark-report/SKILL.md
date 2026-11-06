@@ -40,7 +40,12 @@ If a window holds exactly one run, write the usual `reports/run-<run_id>.md` ins
 
 ## 1. Find the runs and their input files
 
-- The input files live in `C:\Users\hulshofb\Documents\Benchmark tests local models`.
+- A run started from stored messages (every row has an `export_id`) needs no file:
+  the export reads each message's session, question date and `needs` from
+  `benchmark_results.hanuman_exports`. `run.json` then has `input: "hanuman_exports"`
+  and `range` (first and last question date). It is still a selection: say "chosen
+  by date range" in Limitations.
+- For older runs, the input files live in `C:\Users\hulshofb\Documents\Benchmark tests local models`.
 - The export script finds each run's file itself: the one whose every line matches a
   row of the run, preferring the `.tagged.jsonl` variant. An input argument (single run
   only) overrides that, and the script refuses a file that doesn't line up.
