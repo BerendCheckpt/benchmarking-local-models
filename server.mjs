@@ -7,6 +7,7 @@ import { ensureSchema, exportsRepo, listResultModels, queryResults } from "./db.
 import { listModels } from "./ollama.mjs";
 import { checkLogin, handleCallback, isLoggedIn, loginUrl } from "./oauth.mjs";
 import { groupRuns, parseResultFilters } from "./results.mjs";
+import { syncToViewer, viewerSyncConfigured } from "./viewer-sync.mjs";
 
 // Hosts, URLs and ports only come from .env; stop early when one is missing.
 const REQUIRED = [
@@ -84,7 +85,16 @@ async function uploadExports(req, res) {
   let rows;
   try { rows = parseJsonl(String(jsonl ?? "")); } catch (err) { return sendJson(res, 400, { error: err.message }); }
   if (!rows.length) return sendJson(res, 400, { error: "the file has no questions" });
-  sendJson(res, 200, await exportsRepo.insertMany(rows));
+  const counts = await exportsRepo.insertMany(rows);
+  // Then the viewer on spark gets what it doesn't have yet. Its failure never fails the upload.
+  let viewer = null;
+  if (viewerSyncConfigured()) {
+    try { viewer = await syncToViewer(exportsRepo); } catch (err) {
+      console.error(`[viewer-sync] ${err.message}`);
+      viewer = { error: err.message };
+    }
+  }
+  sendJson(res, 200, { ...counts, viewer });
 }
 
 /** The stored messages asked in [from, to), with their sessions' earlier turns, for the selection page. */

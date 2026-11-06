@@ -1,0 +1,13 @@
+# The viewer's read-only API: one Node file plus exports.mjs, on Debian (no Alpine).
+# Built on spark by `npm run viewer:deploy` (docker-compose.db.yml).
+FROM node:22-bookworm-slim
+
+LABEL benchmark.role=viewer-api
+
+WORKDIR /app
+RUN npm init -y >/dev/null && npm install --omit=dev --no-audit --no-fund pg@8.23.1 && npm pkg set type=module
+COPY exports.mjs api.mjs ./
+
+USER node
+EXPOSE 8080
+CMD ["node", "api.mjs"]
